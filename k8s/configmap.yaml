@@ -1,0 +1,51 @@
+# ============================================================================
+# configmap.yaml — Non-sensitive application configuration
+# ============================================================================
+# Apply:
+#   kubectl apply -f k8s/configmap.yaml
+# ============================================================================
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aigov-config
+  namespace: aigov
+  labels:
+    app.kubernetes.io/part-of: aigov
+data:
+  # ---------------------------------------------------------------------------
+  # Backend
+  # ---------------------------------------------------------------------------
+  NODE_ENV: "production"
+  PORT: "3000"
+
+  # Redis (BullMQ job queue)
+  REDIS_HOST: "redis.aigov.svc.cluster.local"
+  REDIS_PORT: "6379"
+
+  # PostgreSQL host (credentials come from secrets, not configmap)
+  POSTGRES_HOST: "postgres.aigov.svc.cluster.local"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "aigov"
+
+  # Kubernetes sandbox
+  K8S_NAMESPACE: "codewhale-runner"
+  K8S_RUNNER_IMAGE: "aigov-codewhale-runner:latest"
+
+  # Audit mode: "inline" (regex, dev), "sdk" (Claude SDK, fast AI), or "sandbox" (K8s+CodeWhale, isolated AI)
+  AUDIT_MODE: "sdk"
+
+  # SDK model when AUDIT_MODE=sdk
+  SDK_MODEL: "claude-sonnet-4-20250514"
+
+  # Decomposition mode: "inline" (placeholder, dev) or "sandbox" (AI, prod)
+  DECOMP_MODE: "sandbox"
+
+  # CORS
+  CORS_ORIGIN: "https://aigov.example.com"
+
+  # ---------------------------------------------------------------------------
+  # Frontend (passed as build args or env vars)
+  # ---------------------------------------------------------------------------
+  VITE_API_URL: "/api"

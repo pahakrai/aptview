@@ -1,0 +1,57 @@
+apiVersion: skaffold/v4beta5
+kind: Config
+metadata:
+  name: polydom-frontend
+build:
+  artifacts:
+    - image: polydom/api-gateway
+      context: .
+      docker:
+        dockerfile: apps/nestjs-services/api-gateway/Dockerfile
+        target: development
+    - image: polydom/auth-service
+      context: .
+      docker:
+        dockerfile: apps/nestjs-services/auth-service/Dockerfile
+        target: development
+    - image: polydom/frontend
+      context: .
+      docker:
+        dockerfile: apps/frontend/Dockerfile
+        target: development
+  local:
+    push: false
+    concurrency: 4
+manifests:
+  rawYaml:
+    - kubernetes/local/namespace.yaml
+    - kubernetes/local/secrets.yaml
+    - kubernetes/local/postgres-init.yaml
+    - kubernetes/local/postgres.yaml
+    - kubernetes/local/infrastructure.yaml
+    - kubernetes/local/services.yaml
+    - kubernetes/local/ingress-controller.yaml
+deploy:
+  kubectl: {}
+
+portForward:
+  - resourceType: service
+    resourceName: nginx-ingress
+    namespace: polydom-dev
+    port: 80
+    localPort: 8080
+  - resourceType: service
+    resourceName: api-gateway
+    namespace: polydom-dev
+    port: 3000
+    localPort: 3000
+  - resourceType: service
+    resourceName: auth-service
+    namespace: polydom-dev
+    port: 3000
+    localPort: 3010
+  - resourceType: service
+    resourceName: frontend
+    namespace: polydom-dev
+    port: 3000
+    localPort: 3002

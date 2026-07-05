@@ -1,0 +1,262 @@
+# ============================================================
+# Skaffold configuration — polydom monorepo (development only)
+#
+# Dev loop:
+#   - Backend: Docker layer cache → fast image rebuilds on source
+#     change (1-2s Docker + pod restart + nx build).
+#   - Frontend: file sync → Next.js HMR on save (no rebuild).
+#   - Tags: fixed "dev" tag, images replaced on rebuild.
+#
+# Usage:
+#   yarn skaffold:dev           Dev mode: port-forward + watch
+#   yarn skaffold:dev:debug     Dev mode: limited concurrency (lower memory)
+#   yarn skaffold:run           One-shot local deploy
+#   yarn skaffold:build         Build images only
+# ============================================================
+apiVersion: skaffold/v4beta5
+kind: Config
+metadata:
+  name: polydom
+
+build:
+  tagPolicy:
+    customTemplate:
+      template: "dev"
+  artifacts:
+    - image: polydom/api-gateway
+      context: .
+      docker:
+        dockerfile: apps/nestjs-services/api-gateway/Dockerfile
+        target: development
+
+    - image: polydom/auth-service
+      context: .
+      docker:
+        dockerfile: apps/nestjs-services/auth-service/Dockerfile
+        target: development
+
+    - image: polydom/user-service
+      context: .
+      docker:
+        dockerfile: apps/nestjs-services/user-service/Dockerfile
+        target: development
+
+    - image: polydom/vendor-service
+      context: .
+      docker:
+        dockerfile: apps/nestjs-services/vendor-service/Dockerfile
+        target: development
+
+    - image: polydom/event-service
+      context: .
+      docker:
+        dockerfile: apps/nestjs-services/event-service/Dockerfile
+        target: development
+
+    - image: polydom/agent-service
+      context: .
+      docker:
+        dockerfile: apps/nestjs-services/agent-service/Dockerfile
+        target: development
+
+    - image: polydom/search-service
+      context: .
+      docker:
+        dockerfile: apps/nestjs-services/search-service/Dockerfile
+        target: development
+
+    - image: polydom/notification-service
+      context: .
+      docker:
+        dockerfile: apps/nestjs-services/notification-service/Dockerfile
+        target: development
+
+    - image: polydom/admin-service
+      context: .
+      docker:
+        dockerfile: apps/nestjs-services/admin-service/Dockerfile
+        target: development
+
+    - image: polydom/booking-service
+      context: .
+      docker:
+        dockerfile: apps/nestjs-services/booking-service/Dockerfile
+        target: development
+
+    - image: polydom/frontend
+      context: .
+      docker:
+        dockerfile: apps/frontend/Dockerfile
+        target: development
+      sync:
+        manual:
+          - src: 'apps/frontend/**/*.{js,jsx,ts,tsx,css,scss}'
+            dest: /app/
+          - src: 'libs/**/src/**/*.{ts,tsx}'
+            dest: /app/
+
+    - image: polydom/admin-frontend
+      context: .
+      docker:
+        dockerfile: apps/admin-frontend/Dockerfile
+        target: development
+      sync:
+        manual:
+          - src: 'apps/admin-frontend/**/*.{js,jsx,ts,tsx,css,scss}'
+            dest: /app/
+          - src: 'libs/**/src/**/*.{ts,tsx}'
+            dest: /app/
+  local:
+    useBuildkit: true
+    push: false
+    concurrency: 0
+
+manifests:
+  rawYaml:
+    - kubernetes/local/namespace.yaml
+    - kubernetes/local/secrets.yaml
+    - kubernetes/local/postgres-init.yaml
+    - kubernetes/local/postgres.yaml
+    - kubernetes/local/infrastructure.yaml
+    - kubernetes/local/pgadmin.yaml
+    - kubernetes/local/services.yaml
+    - kubernetes/local/ingress-controller.yaml
+
+deploy:
+  kubectl: {}
+  statusCheckDeadlineSeconds: 300
+
+portForward:
+  - resourceType: service
+    resourceName: nginx-ingress
+    namespace: polydom-dev
+    port: 80
+    localPort: 8080
+  - resourceType: service
+    resourceName: api-gateway
+    namespace: polydom-dev
+    port: 3000
+    localPort: 3000
+  - resourceType: service
+    resourceName: api-gateway
+    namespace: polydom-dev
+    port: 9229
+    localPort: 9229
+  - resourceType: service
+    resourceName: auth-service
+    namespace: polydom-dev
+    port: 3000
+    localPort: 3010
+  - resourceType: service
+    resourceName: auth-service
+    namespace: polydom-dev
+    port: 9230
+    localPort: 9230
+  - resourceType: service
+    resourceName: user-service
+    namespace: polydom-dev
+    port: 3000
+    localPort: 3020
+  - resourceType: service
+    resourceName: user-service
+    namespace: polydom-dev
+    port: 9231
+    localPort: 9231
+  - resourceType: service
+    resourceName: vendor-service
+    namespace: polydom-dev
+    port: 3000
+    localPort: 3030
+  - resourceType: service
+    resourceName: vendor-service
+    namespace: polydom-dev
+    port: 9232
+    localPort: 9232
+  - resourceType: service
+    resourceName: event-service
+    namespace: polydom-dev
+    port: 3000
+    localPort: 3040
+  - resourceType: service
+    resourceName: event-service
+    namespace: polydom-dev
+    port: 9233
+    localPort: 9233
+  - resourceType: service
+    resourceName: frontend
+    namespace: polydom-dev
+    port: 3000
+    localPort: 3002
+  - resourceType: service
+    resourceName: admin-frontend
+    namespace: polydom-dev
+    port: 3000
+    localPort: 3004
+  - resourceType: service
+    resourceName: agent-service
+    namespace: polydom-dev
+    port: 3010
+    localPort: 3050
+  - resourceType: service
+    resourceName: agent-service
+    namespace: polydom-dev
+    port: 9234
+    localPort: 9234
+  - resourceType: service
+    resourceName: search-service
+    namespace: polydom-dev
+    port: 3000
+    localPort: 3060
+  - resourceType: service
+    resourceName: search-service
+    namespace: polydom-dev
+    port: 9235
+    localPort: 9235
+  - resourceType: service
+    resourceName: notification-service
+    namespace: polydom-dev
+    port: 3008
+    localPort: 3080
+  - resourceType: service
+    resourceName: notification-service
+    namespace: polydom-dev
+    port: 9236
+    localPort: 9236
+  - resourceType: service
+    resourceName: admin-service
+    namespace: polydom-dev
+    port: 3009
+    localPort: 3090
+  - resourceType: service
+    resourceName: admin-service
+    namespace: polydom-dev
+    port: 9237
+    localPort: 9237
+  - resourceType: service
+    resourceName: booking-service
+    namespace: polydom-dev
+    port: 3007
+    localPort: 3070
+  - resourceType: service
+    resourceName: booking-service
+    namespace: polydom-dev
+    port: 9238
+    localPort: 9238
+
+profiles:
+  - name: ml
+    build:
+      artifacts:
+        - image: polydom/python-workers
+          context: .
+          docker:
+            dockerfile: apps/python-workers/Dockerfile
+    manifests:
+      rawYaml:
+        - kubernetes/local/python-workers.yaml
+    portForward:
+      - resourceType: service
+        resourceName: inference
+        namespace: polydom-dev
+        port: 8000
+        localPort: 8000

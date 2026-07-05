@@ -1,0 +1,28 @@
+# ============================================================================
+# namespaces.yaml — All namespaces for the aigov platform
+# ============================================================================
+# Apply:
+#   kubectl apply -f k8s/namespaces.yaml
+# ============================================================================
+
+---
+# Main application namespace (backend, frontend, PostgreSQL, Redis)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aigov
+  labels:
+    app.kubernetes.io/part-of: aigov
+    app.kubernetes.io/managed-by: kubectl
+
+---
+# Ephemeral sandbox namespace (CodeWhale runner Jobs)
+# Pods here are short-lived with no network access
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: codewhale-runner
+  labels:
+    app.kubernetes.io/part-of: aigov
+    app.kubernetes.io/component: sandbox
+    app.kubernetes.io/managed-by: kubectl

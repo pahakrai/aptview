@@ -1,0 +1,39 @@
+# ============================================================================
+# network-policy.yaml — Network isolation for CodeWhale sandbox pods
+# ============================================================================
+# Blocks all egress and ingress traffic for sandbox runner pods.
+# The sandbox has no legitimate reason to reach external networks.
+#
+# Apply:
+#   kubectl apply -f k8s/network-policy.yaml
+# ============================================================================
+
+---
+# Deny all ingress to runner pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-ingress
+  namespace: codewhale-runner
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: codewhale-runner
+  policyTypes:
+    - Ingress
+  ingress: []  # Empty = deny everything
+
+---
+# Deny all egress from runner pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-egress
+  namespace: codewhale-runner
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: codewhale-runner
+  policyTypes:
+    - Egress
+  egress: []  # Empty = deny everything

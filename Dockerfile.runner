@@ -1,0 +1,66 @@
+# ============================================================================
+# aigov CodeWhale Sandbox Runner
+# ============================================================================
+# Ephemeral container image for AI-powered code review.
+#
+# Build:
+#   docker build -f Dockerfile.runner -t aigov-codewhale-runner:latest .
+#
+# Push:
+#   docker tag aigov-codewhale-runner:latest <registry>/aigov-codewhale-runner:latest
+#   docker push <registry>/aigov-codewhale-runner:latest
+# ============================================================================
+
+FROM node:22-alpine
+
+LABEL org.aigov.component="codewhale-runner"
+LABEL org.aigov.version="0.1.0"
+
+# ---------------------------------------------------------------------------
+# System dependencies
+# ---------------------------------------------------------------------------
+RUN apk add --no-cache \
+  bash \
+  curl \
+  git \
+  jq \
+  python3 \
+  py3-pip
+
+# ---------------------------------------------------------------------------
+# CodeWhale CLI
+# ---------------------------------------------------------------------------
+# The codewhale binary is bundled at build time. In production CI, this would
+# be pulled from a release artifact or package registry.
+#
+# For now, the binary is expected at ./codewhale relative to the Docker context.
+# Copy it into the image and make it executable.
+COPY codewhale /usr/local/bin/codewhale
+RUN chmod +x /usr/local/bin/codewhale
+
+# ---------------------------------------------------------------------------
+# Workspace
+# ---------------------------------------------------------------------------
+# The /workspace directory is the sandbox root. In Kubernetes, this is backed
+# by an emptyDir volume so all data is ephemeral.
+RUN mkdir -p /workspace && chmod 777 /workspace
+WORKDIR /workspace
+
+# ---------------------------------------------------------------------------
+# Audit entrypoint
+# ---------------------------------------------------------------------------
+# The entrypoint script receives the audit payload via stdin or args and
+# runs codewhale in headless mode. It expects:
+#   - AUDIT_PROMPT env var or --goal argument: the analysis instructions
+#   - Allowed tools are restricted to read-only: read, grep
+#   - Output is written to stdout as JSON
+#
+# Example invocation (by the K8s Job):
+#   codewhale --goal "$AUDIT_PROMPT" \
+#     --allowed-tools "read,grep" \
+#     --model deepseek-v4-flash \
+#     --output-format json
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

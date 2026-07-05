@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "preserve",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "allowSyntheticDefaultImports": true,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": ".",
+    "paths": {
+      "@polydom/shared-types": ["libs/shared-types/src/index.ts"],
+      "@polydom/kafka-client": ["libs/kafka-client/src/index.ts"],
+      "@polydom/nats-client": ["libs/nats-client/src/index.ts"],
+      "@polydom/database-client": ["libs/database-client/src/index.ts"],
+      "@polydom/elasticsearch-client": ["libs/elasticsearch-client/src/index.ts"],
+      "@polydom/utils": ["libs/utils/src/index.ts"],
+      "@polydom/auth": ["libs/auth/src/index.ts"]
+    }
+  }
+}

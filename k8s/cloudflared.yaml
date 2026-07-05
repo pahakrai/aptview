@@ -1,0 +1,92 @@
+# ============================================================================
+# cloudflared.yaml — Cloudflare Tunnel inside the cluster
+# ============================================================================
+# Exposes the backend service to a Cloudflare-proxied domain without opening
+# any inbound ports. The tunnel is an outbound connection — no firewall rules
+# needed.
+#
+# Setup:
+#   1. cloudflared tunnel login
+#   2. cloudflared tunnel create aigov
+#   3. cloudflared tunnel route dns aigov aigov.example.com
+#   4. Get the tunnel token: cloudflared tunnel token aigov
+#   5. Create the secret:
+#      kubectl -n aigov create secret generic cloudflare-tunnel \
+#        --from-literal=token=<tunnel-token>
+#   6. kubectl apply -f k8s/cloudflared.yaml
+# ============================================================================
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cloudflared
+  namespace: aigov
+  labels:
+    app: cloudflared
+    app.kubernetes.io/part-of: aigov
+spec:
+  type: ClusterIP
+  selector:
+    app: cloudflared
+  ports:
+    - name: metrics
+      port: 2000
+      targetPort: 2000
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared
+  namespace: aigov
+  labels:
+    app: cloudflared
+    app.kubernetes.io/part-of: aigov
+    app.kubernetes.io/component: tunnel
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloudflared
+  template:
+    metadata:
+      labels:
+        app: cloudflared
+        app.kubernetes.io/part-of: aigov
+        app.kubernetes.io/component: tunnel
+    spec:
+      containers:
+        - name: cloudflared
+          image: cloudflare/cloudflared:latest
+          args:
+            - tunnel
+            - --no-autoupdate
+            - run
+            - --token
+            - $(TUNNEL_TOKEN)
+          env:
+            - name: TUNNEL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cloudflare-tunnel
+                  key: token
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: 2000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 2000
+            initialDelaySeconds: 5
+            periodSeconds: 10

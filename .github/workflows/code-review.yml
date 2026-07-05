@@ -1,0 +1,126 @@
+# ============================================================================
+# Code Review — Triggered on every PR to run AI-powered audit
+# ============================================================================
+# Sends PR diff + changed files to the aigov backend for analysis.
+#
+# Required secrets:
+#   AIGOV_API_URL     — Backend URL (e.g. https://aigov.example.com)
+#   AIGOV_API_KEY     — Organization-scoped API key (x-api-key header)
+#   AIGOV_ORG_ID      — UUID of the organization
+#   AIGOV_REPO_ID     — UUID of the linked repository
+# ============================================================================
+
+name: Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to review'
+        required: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get PR metadata
+        id: pr
+        run: |
+          echo "number=${{ github.event.pull_request.number || github.event.inputs.pr_number }}" >> $GITHUB_OUTPUT
+          echo "sha=${{ github.event.pull_request.head.sha || github.sha }}" >> $GITHUB_OUTPUT
+
+      - name: Build diff
+        run: |
+          git diff origin/${{ github.base_ref }}...origin/${{ github.head_ref }} > diff.txt
+          echo "Diff: $(wc -l < diff.txt) lines"
+
+      - name: Build changed files payload
+        run: |
+          # List changed files, read their contents, build a JSON object
+          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...origin/${{ github.head_ref }})
+
+          echo "{" > changed_files.json
+          FIRST=true
+          for f in $CHANGED; do
+            if [ -f "$f" ]; then
+              KEY=$(echo "$f" | jq -R .)
+              VALUE=$(jq -Rs . < "$f")
+              if [ "$FIRST" = true ]; then FIRST=false; else echo "," >> changed_files.json; fi
+              printf '  %s: %s' "$KEY" "$VALUE" >> changed_files.json
+            fi
+          done
+          echo "}" >> changed_files.json
+          echo "Changed files payload: $(wc -c < changed_files.json) bytes"
+
+      - name: Build audit request
+        run: |
+          DIFF=$(jq -Rs . < diff.txt)
+          CHANGED_FILES=$(cat changed_files.json)
+          TITLE=$(echo "${{ github.event.pull_request.title || 'Manual review' }}" | jq -R .)
+          # PR body as task description (first 2000 chars)
+          TASK_DESC=$(echo "${{ github.event.pull_request.body || '' }}" | head -c 2000 | jq -Rs .)
+
+          jq -n \
+            --arg orgId "${{ secrets.AIGOV_ORG_ID }}" \
+            --arg repoId "${{ secrets.AIGOV_REPO_ID }}" \
+            --argjson prNumber "${{ steps.pr.outputs.number }}" \
+            --argjson prTitle "$TITLE" \
+            --arg commitSha "${{ steps.pr.outputs.sha }}" \
+            --argjson diffContent "$DIFF" \
+            --argjson changedFiles "$CHANGED_FILES" \
+            --argjson taskDescription "$TASK_DESC" \
+            '{
+              organizationId: $orgId,
+              repositoryId: $repoId,
+              prNumber: $prNumber,
+              prTitle: $prTitle,
+              commitSha: $commitSha,
+              diffContent: $diffContent,
+              changedFiles: $changedFiles,
+              taskDescription: $taskDescription
+            }' > audit_request.json
+
+      - name: Submit audit
+        id: audit
+        run: |
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${{ secrets.AIGOV_API_URL }}/api/v1/audits" \
+            -H "Content-Type: application/json" \
+            -H "x-api-key: ${{ secrets.AIGOV_API_KEY }}" \
+            -d @audit_request.json)
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+
+          echo "http_code=$HTTP_CODE" >> $GITHUB_OUTPUT
+          echo "$BODY" | jq . || echo "$BODY"
+
+          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "202" ]; then
+            echo "::error::Audit submission failed (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+
+          echo "Audit queued — job $(echo "$BODY" | jq -r '.jobId // "unknown"')"
+
+      - name: Post PR comment
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ steps.pr.outputs.number }},
+              body: `## 🤖 Code Review
+
+            Audit queued. Results will appear in the dashboard once processing completes.
+
+            <sub>Powered by [aigov](https://aigov.example.com) — AI Code Governance Platform</sub>`,
+            });

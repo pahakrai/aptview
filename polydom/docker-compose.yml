@@ -1,0 +1,535 @@
+# ============================================================================
+# PolyEvent — Full Development Platform
+# Run everything with a single command:  docker compose up
+#
+# Hot reload: source code is volume-mounted, services restart on file changes.
+# First run takes a few minutes (npm ci). Subsequent runs are cached.
+# ============================================================================
+
+version: '3.8'
+
+services:
+  # =========================================================================
+  # Infrastructure
+  # =========================================================================
+
+  postgres:
+    image: pgvector/pgvector:pg15
+    environment:
+      POSTGRES_USER: eventbooking
+      POSTGRES_PASSWORD: eventbooking123
+      POSTGRES_DB: eventbooking
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./tools/postgres-init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eventbooking"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongodb:
+    image: mongo:7
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: mongopass123
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass redispass123
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redpanda — Kafka API-compatible message broker (no Zookeeper)
+  kafka:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.18
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --overprovisioned
+      - --kafka-addr=0.0.0.0:9092
+      - --advertise-kafka-addr=kafka:9092
+    ports:
+      - "9092:9092"
+      - "9644:9644"
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  nats:
+    image: nats:2.10-alpine
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["-js", "-m", "8222"]
+    healthcheck:
+      test: ["CMD", "nats", "server", "check", "connection", "--server", "nats://localhost:4222"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  elasticsearch:
+    image: elasticsearch:8.11.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  kibana:
+    image: kibana:8.11.0
+    depends_on:
+      - elasticsearch
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./tools/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+
+  grafana:
+    image: grafana/grafana:latest
+    depends_on:
+      - prometheus
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+
+  # PostgreSQL web GUI — pre-configured to connect to postgres service
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@polydom.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "5050:80"
+    volumes:
+      - ./tools/pgadmin/servers.json:/pgadmin4/servers.json:ro
+      - pgadmin_data:/var/lib/pgadmin
+
+  # =========================================================================
+  # Application Services — hot reload via volume mounts + watch mode
+  # =========================================================================
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: ./apps/nestjs-services/api-gateway/Dockerfile
+      target: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      GATEWAY_DATABASE_URL: postgresql://eventbooking:eventbooking123@postgres:5432/gateway_db
+      REDIS_URL: redis://:redispass123@redis:6379
+      KAFKA_BROKERS: kafka:9092
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/apps/nestjs-services/api-gateway/node_modules
+    command: yarn nest start --watch
+    working_dir: /app/apps/nestjs-services/api-gateway
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: ./apps/nestjs-services/auth-service/Dockerfile
+      target: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      AUTH_DATABASE_URL: postgresql://eventbooking:eventbooking123@postgres:5432/auth_db
+      REDIS_URL: redis://:redispass123@redis:6379
+      JWT_SECRET: dev-secret-change-in-production
+      JWT_EXPIRES_IN: 7d
+      PORT: 3001
+    ports:
+      - "3001:3001"
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/apps/nestjs-services/auth-service/node_modules
+    command: yarn nest start --watch
+    working_dir: /app/apps/nestjs-services/auth-service
+
+  user-service:
+    build:
+      context: .
+      dockerfile: ./apps/nestjs-services/user-service/Dockerfile
+      target: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      USER_DATABASE_URL: postgresql://eventbooking:eventbooking123@postgres:5432/user_db
+      REDIS_URL: redis://:redispass123@redis:6379
+      NATS_SERVERS: nats:4222
+      PORT: 3002
+    ports:
+      - "3002:3002"
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/apps/nestjs-services/user-service/node_modules
+    command: yarn nest start --watch
+    working_dir: /app/apps/nestjs-services/user-service
+
+  vendor-service:
+    build:
+      context: .
+      dockerfile: ./apps/nestjs-services/vendor-service/Dockerfile
+      target: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      VENDOR_DATABASE_URL: postgresql://eventbooking:eventbooking123@postgres:5432/vendor_db
+      REDIS_URL: redis://:redispass123@redis:6379
+      NATS_SERVERS: nats:4222
+      PORT: 3003
+    ports:
+      - "3003:3003"
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/apps/nestjs-services/vendor-service/node_modules
+    command: yarn nest start --watch
+    working_dir: /app/apps/nestjs-services/vendor-service
+
+  event-service:
+    build:
+      context: .
+      dockerfile: ./apps/nestjs-services/event-service/Dockerfile
+      target: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      EVENT_DATABASE_URL: postgresql://eventbooking:eventbooking123@postgres:5432/event_db
+      REDIS_URL: redis://:redispass123@redis:6379
+      KAFKA_BROKERS: kafka:9092
+      NATS_SERVERS: nats:4222
+      VENDOR_BOOKING_LOCK_TTL_SECONDS: "600"
+      PORT: 3004
+    ports:
+      - "3004:3004"
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/apps/nestjs-services/event-service/node_modules
+    command: yarn nest start --watch
+    working_dir: /app/apps/nestjs-services/event-service
+
+  booking-service:
+    build:
+      context: .
+      dockerfile: ./apps/nestjs-services/booking-service/Dockerfile
+      target: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      BOOKING_DATABASE_URL: postgresql://eventbooking:eventbooking123@postgres:5432/booking_db
+      REDIS_URL: redis://:redispass123@redis:6379
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-sk_test_placeholder}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-whsec_placeholder}
+      PLATFORM_FEE_ENABLED: "false"
+      PLATFORM_FEE_PERCENTAGE: "0"
+      PLATFORM_FEE_FLAT_CENTS: "0"
+      PLATFORM_FEE_MINIMUM_CENTS: "0"
+      PAYOUTS_ENABLED: "false"
+      PORT: 3007
+    ports:
+      - "3007:3007"
+    volumes:
+      - .:/app
+      - /app/apps/nestjs-services/booking-service/node_modules
+
+  agent-service:
+    build:
+      context: .
+      dockerfile: ./apps/nestjs-services/agent-service/Dockerfile
+      target: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      AGENT_DATABASE_URL: postgresql://eventbooking:eventbooking123@postgres:5432/agent_db
+      REDIS_URL: redis://:redispass123@redis:6379
+      LLM_PROVIDER: deepseek
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-sk-placeholder}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-sk-placeholder}
+      PORT: 3010
+    ports:
+      - "3010:3010"
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/apps/nestjs-services/agent-service/node_modules
+    command: yarn nest start --watch
+    working_dir: /app/apps/nestjs-services/agent-service
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: ./apps/nestjs-services/notification-service/Dockerfile
+      target: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      NOTIFICATION_DATABASE_URL: postgresql://eventbooking:eventbooking123@postgres:5432/notification_db
+      REDIS_URL: redis://:redispass123@redis:6379
+      KAFKA_BROKERS: kafka:9092
+      SMTP_HOST: ${SMTP_HOST:-smtp.mailtrap.io}
+      SMTP_PORT: ${SMTP_PORT:-2525}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      PORT: 3008
+    ports:
+      - "3008:3008"
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/apps/nestjs-services/notification-service/node_modules
+    command: yarn nest start --watch
+    working_dir: /app/apps/nestjs-services/notification-service
+
+  admin-service:
+    build:
+      context: .
+      dockerfile: ./apps/nestjs-services/admin-service/Dockerfile
+      target: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      ADMIN_DATABASE_URL: postgresql://eventbooking:eventbooking123@postgres:5432/admin_db
+      REDIS_URL: redis://:redispass123@redis:6379
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-production}
+      AUTH_SERVICE_URL: http://auth-service:3000
+      USER_SERVICE_URL: http://user-service:3000
+      VENDOR_SERVICE_URL: http://vendor-service:3000
+      EVENT_SERVICE_URL: http://event-service:3000
+      BOOKING_SERVICE_URL: http://booking-service:3007
+      PORT: 3009
+    ports:
+      - "3009:3009"
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/apps/nestjs-services/admin-service/node_modules
+    command: yarn nest start --watch
+    working_dir: /app/apps/nestjs-services/admin-service
+
+  frontend:
+    build:
+      context: .
+      dockerfile: ./apps/frontend/Dockerfile
+      target: deps
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3000
+    ports:
+      - "3005:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/apps/frontend/node_modules
+      - /app/apps/frontend/.next
+    command: yarn next dev
+    working_dir: /app/apps/frontend
+
+  admin-frontend:
+    build:
+      context: .
+      dockerfile: ./apps/admin-frontend/Dockerfile
+      target: deps
+    depends_on:
+      - agent-service
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3000
+      NEXT_PUBLIC_AGENT_URL: http://localhost:3010
+    ports:
+      - "3004:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/apps/admin-frontend/node_modules
+      - /app/apps/admin-frontend/.next
+    command: yarn next dev
+    working_dir: /app/apps/admin-frontend
+
+  # =========================================================================
+  # Python Workers
+  # =========================================================================
+
+  kafka-consumers:
+    build:
+      context: ./apps/python-workers
+      dockerfile: Dockerfile
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_CONSUMER_GROUP: python-workers-dev
+      FEATURE_STORE_URL: redis://:redispass123@redis:6379
+    volumes:
+      - ./apps/python-workers:/app
+    command: python -m kafka-consumers.user_activity
+    restart: unless-stopped
+
+  ml-training:
+    build:
+      context: ./apps/python-workers
+      dockerfile: Dockerfile
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      FEATURE_STORE_URL: redis://:redispass123@redis:6379
+      TRAINING_DATA_PATH: /data/training
+      PIPELINE_MODE: incremental
+      PIPELINE_WINDOW_DAYS: "30"
+      VECTOR_DATABASE_URL: postgresql://eventbooking:eventbooking123@postgres:5432/vector_db
+      SOURCE_DATABASE_URL: postgresql://eventbooking:eventbooking123@postgres:5432/eventbooking
+      EXPORT_PARQUET: "1"
+    volumes:
+      - ./apps/python-workers:/app
+      - training_data:/data/training
+    command: python -m ml-training.data_pipeline
+    restart: "no"
+
+  inference:
+    build:
+      context: ./apps/python-workers
+      dockerfile: Dockerfile
+    depends_on:
+      - redis
+      - elasticsearch
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      FEATURE_STORE_URL: redis://:redispass123@redis:6379
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+      MODEL_PATH: /data/training/models
+      MODEL_VERSION: latest
+      VECTOR_DATABASE_URL: postgresql://eventbooking:eventbooking123@postgres:5432/vector_db
+      EMBEDDINGS_PATH: /data/training/models
+      EVENT_CATALOG_PATH: /data/training/event_catalog.json
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./apps/python-workers:/app
+      - training_data:/data/training
+    command: uvicorn inference.api:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  search-service:
+    build:
+      context: .
+      dockerfile: ./apps/nestjs-services/search-service/Dockerfile
+      target: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      inference:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      VECTOR_DATABASE_URL: postgresql://eventbooking:eventbooking123@postgres:5432/vector_db
+      REDIS_URL: redis://:redispass123@redis:6379
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+      PYTHON_INFERENCE_URL: http://inference:8000
+      PORT: 3060
+    ports:
+      - "3060:3060"
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/apps/nestjs-services/search-service/node_modules
+    command: yarn nest start --watch
+    working_dir: /app/apps/nestjs-services/search-service
+
+volumes:
+  postgres_data:
+  mongodb_data:
+  elasticsearch_data:
+  prometheus_data:
+  grafana_data:
+  pgadmin_data:
+  training_data:

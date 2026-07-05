@@ -1,0 +1,145 @@
+# ============================================================================
+# backend.yaml — NestJS Backend Deployment + Service + ServiceAccount
+# ============================================================================
+# The backend:
+#   1. Serves REST API (port 3000)
+#   2. Runs BullMQ workers (audit + decomposition queues via Redis)
+#   3. Submits ephemeral K8s Jobs to codewhale-runner namespace
+#
+# Scaling: increase replicas for more concurrent API capacity.
+# BullMQ workers are in-process — each replica runs its own worker pool.
+#
+# Apply:
+#   kubectl apply -f k8s/backend.yaml
+# ============================================================================
+
+---
+# ServiceAccount for the backend
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backend-sa
+  namespace: aigov
+  labels:
+    app.kubernetes.io/part-of: aigov
+    app.kubernetes.io/component: backend
+
+---
+# Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: aigov
+  labels:
+    app: backend
+    app.kubernetes.io/part-of: aigov
+    app.kubernetes.io/component: backend
+spec:
+  type: ClusterIP
+  selector:
+    app: backend
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+
+---
+# Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: aigov
+  labels:
+    app: backend
+    app.kubernetes.io/part-of: aigov
+    app.kubernetes.io/component: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+        app.kubernetes.io/part-of: aigov
+        app.kubernetes.io/component: backend
+    spec:
+      serviceAccountName: backend-sa
+      containers:
+        - name: backend
+          image: aigov-codewhale-runner:latest  # TODO: separate backend image
+          imagePullPolicy: IfNotPresent
+          command: ["node"]
+          args: ["dist/main"]
+          ports:
+            - containerPort: 3000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: aigov-config
+          env:
+            # Secrets
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: aigov-secrets
+                  key: JWT_SECRET
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: aigov-secrets
+                  key: GITHUB_TOKEN
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: aigov-secrets
+                  key: DATABASE_URL
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aigov-secrets
+                  key: ANTHROPIC_API_KEY
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+      # Allow the backend to reach Docker registry for pulling runner images
+      # if using a private registry, add imagePullSecrets here
+
+---
+# RoleBinding: allow backend SA to create Jobs in codewhale-runner
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: backend-sandbox-access
+  namespace: codewhale-runner
+  labels:
+    app.kubernetes.io/part-of: aigov
+subjects:
+  - kind: ServiceAccount
+    name: backend-sa
+    namespace: aigov
+roleRef:
+  kind: Role
+  name: codewhale-runner-role
+  apiGroup: rbac.authorization.k8s.io
