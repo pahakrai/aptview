@@ -1,9 +1,26 @@
-import { Controller, Get, Post, Patch, Delete, Param, Body, Query } from '@nestjs/common';
+import {
+  Controller, Get, Post, Patch, Delete, Param, Body, Query,
+  UploadedFile, UseInterceptors,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { StandardsService } from './standards.service';
 
 @Controller('standards')
 export class StandardsController {
   constructor(private readonly standardsService: StandardsService) {}
+
+  /**
+   * Upload a PDF or text file containing coding standards.
+   * Extracts text and parses it into guideline patterns.
+   */
+  @Post('upload')
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadStandards(
+    @UploadedFile() file: Express.Multer.File,
+    @Body('organizationId') organizationId: string,
+  ) {
+    return this.standardsService.parseUploadedStandards(file, organizationId);
+  }
 
   @Post()
   create(

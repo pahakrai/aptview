@@ -1,4 +1,5 @@
-import { Controller, Post, Headers, Body, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Post, Headers, Body, HttpCode, HttpStatus, Req, RawBodyRequest } from '@nestjs/common';
+import { Request } from 'express';
 import { WebhooksService } from './webhooks.service';
 
 @Controller('webhooks')
@@ -7,6 +8,7 @@ export class WebhooksController {
 
   /**
    * GitHub PR webhook receiver.
+   * Validates HMAC signature before processing.
    */
   @Post('github')
   @HttpCode(HttpStatus.ACCEPTED)
@@ -14,8 +16,15 @@ export class WebhooksController {
     @Headers('x-hub-signature-256') signature: string,
     @Headers('x-github-event') event: string,
     @Body() payload: Record<string, unknown>,
+    @Req() req: RawBodyRequest<Request>,
   ) {
-    return this.webhooksService.processGitHubWebhook(event, payload, signature);
+    const rawBody = (req as Record<string, unknown>).rawBody as string | undefined;
+    return this.webhooksService.processGitHubWebhook(
+      event,
+      payload,
+      signature,
+      rawBody,
+    );
   }
 
   /**

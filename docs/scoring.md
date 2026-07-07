@@ -1,8 +1,27 @@
 # Scoring Metrics
 
-Every audit produces three percentage scores in addition to the categorical verdict
-(`pass` / `warning` / `fail`). This document explains how each score is computed,
-what it measures, and how to interpret it.
+Every PR triggers **two parallel pipelines** — one for scoring, one for review:
+
+```
+PR opened
+  │
+  ├─→ Pipeline 1: SCORING (automated)
+  │     BullMQ → AuditProcessor (inline | sdk | sandbox)
+  │     → compliance%, efficiency%, coverage%
+  │     → Stored in ai_audits → Dashboard + Desktop app
+  │
+  └─→ Pipeline 2: REVIEW (HITL)
+        BullMQ → LangGraph (fetchDiff → generateReview → interrupt)
+        → Text review → Desktop app shows diff + review
+        → Human approves → Octokit posts to GitHub
+```
+
+**Scores are always computed** — the audit pipeline runs regardless of the review
+mode. They appear in the desktop app's score bar, the web dashboard, and the
+API endpoints.
+
+This document explains how each score is computed, what it measures, and
+how to interpret it.
 
 ## The Three Scores
 
@@ -273,3 +292,35 @@ And it doesn't fully cover the task requirements — the MX record check is miss
 
 Previously, the auditor would only see `"verdict": "warning"` with a count of
 violations. Now they see _why_ and _by how much_.
+
+---
+
+## Scores in the Desktop App
+
+When you select a review in the desktop app, the score bar below the monitor
+shows the three metrics with live progress bars:
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│    78%            60%            67%                               │
+│  COMPLIANCE     EFFICIENCY     COVERAGE                            │
+│  ████████░░     ██████░░░░     ███████░░░                          │
+├────────────────────────────────────────────────────────────────────┤
+│  ⏸ PAUSED: Awaiting Human Approval                                 │
+│  [Approve & Comment] [Cancel] [Manually Trigger Review]            │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+- **Green (compliance)**: Standards followed by the PR
+- **Blue (efficiency)**: Code size vs. estimate — penalizes over-engineering
+- **Violet (coverage)**: Task requirements addressed (AI-only, blank if not computed)
+
+Scores update automatically when the audit completes. While the audit is still
+processing, the bars show `—` until data arrives.
+
+## Audit completes independently
+
+The scoring pipeline runs in parallel with the review pipeline. You can approve
+or cancel a review while the audit is still computing scores. The score bar
+updates whenever the data becomes available, even after you've posted the review
+to GitHub.

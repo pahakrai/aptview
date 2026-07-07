@@ -1,0 +1,42 @@
+{
+  "name": "aigov-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder",
+    "dist": "electron-builder --publish never"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.7.0"
+  },
+  "devDependencies": {
+    "electron": "^30.0.0",
+    "electron-builder": "^24.0.0"
+  },
+  "build": {
+    "appId": "com.aigov.desktop",
+    "productName": "AIGov",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "node_modules/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": "dmg"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  }
+}

@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AIGov — Review Panel</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; scrollbar-width:thin; scrollbar-color:#334155 transparent; }
+    body { font-family:'Inter',system-ui,-apple-system,sans-serif; background:#020617; color:#e2e8f0; height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+    ::selection { background:rgba(34,197,94,0.3); color:#fff; }
+
+    /* Status Bar */
+    #status-bar { display:flex; align-items:center; gap:12px; padding:8px 16px; background:#0f172a; border-bottom:1px solid #1e293b; font-size:12px; }
+    .status-dot { width:8px; height:8px; border-radius:50%; background:#475569; }
+    .status-dot.green { background:#22c55e; }
+    .status-dot.amber { background:#f59e0b; animation:pulse 1s infinite; }
+    .status-dot.red { background:#ef4444; }
+    @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.3 } }
+    .btn { padding:6px 14px; border-radius:6px; border:1px solid #334155; background:#1e293b; color:#e2e8f0; font-size:12px; font-weight:500; cursor:pointer; transition:all 0.15s; font-family:inherit; }
+    .btn:hover { background:#334155; border-color:#475569; }
+    .btn:disabled { opacity:0.4; cursor:not-allowed; }
+    .btn-primary { background:#16a34a; border-color:#15803d; color:#fff; }
+    .btn-primary:hover { background:#15803d; }
+    .btn-danger { background:#991b1b; border-color:#7f1d1d; }
+    .btn-danger:hover { background:#7f1d1d; }
+    .btn-outline { background:transparent; }
+    .btn-sm { padding:3px 10px; font-size:11px; }
+
+    /* Activity Board */
+    #activity-bar { display:flex; align-items:center; gap:12px; padding:8px 16px; background:#0f172a; border-bottom:1px solid #1e293b; font-size:12px; position:relative; }
+    .activity-item { display:flex; align-items:center; gap:5px; color:#94a3b8; }
+    .activity-item strong { color:#e2e8f0; }
+    .branch-arrow { color:#64748b; font-family:monospace; font-size:11px; }
+    .pr-badge { background:#2563eb20; border:1px solid #2563eb40; color:#60a5fa; padding:2px 8px; border-radius:4px; font-family:monospace; font-size:12px; cursor:pointer; }
+    .pr-badge:hover { background:#2563eb30; }
+    .review-count { font-size:10px; color:#64748b; margin-left:4px; }
+
+    /* Review selector dropdown */
+    #review-list { display:none; position:absolute; top:100%; left:16px; right:16px; background:#0f172a; border:1px solid #1e293b; border-top:none; border-radius:0 0 8px 8px; z-index:100; max-height:240px; overflow-y:auto; }
+    #review-list.open { display:block; }
+    .review-list-item { padding:10px 16px; border-bottom:1px solid #1e293b; cursor:pointer; display:flex; align-items:center; gap:10px; font-size:12px; transition:background 0.1s; }
+    .review-list-item:hover { background:#1e293b; }
+    .review-list-item.active { background:#1e293b; border-left:2px solid #22c55e; }
+    .review-list-item .repo-name { color:#e2e8f0; font-weight:500; min-width:120px; }
+    .review-list-item .branch-info { color:#94a3b8; font-size:11px; }
+    .review-list-item .thread-id { color:#475569; font-family:monospace; font-size:10px; margin-left:auto; }
+    .review-list-item .item-status { font-size:10px; }
+
+    /* Main content */
+    #main { flex:1; display:flex; overflow:hidden; }
+
+    /* Config Panel */
+    #config-panel { width:240px; background:#0f172a; border-right:1px solid #1e293b; padding:16px; display:flex; flex-direction:column; gap:16px; overflow-y:auto; }
+    .config-section { display:flex; flex-direction:column; gap:6px; }
+    .config-label { font-size:11px; font-weight:600; color:#64748b; text-transform:uppercase; letter-spacing:0.05em; }
+    select, textarea { background:#1e293b; border:1px solid #334155; border-radius:6px; color:#e2e8f0; padding:8px; font-size:12px; font-family:inherit; width:100%; }
+    textarea { resize:vertical; min-height:80px; font-family:'Inter',sans-serif; }
+    select:focus, textarea:focus { outline:none; border-color:#16a34a; }
+
+    /* Monitor */
+    #monitor { flex:1; display:flex; overflow:hidden; }
+    .monitor-pane { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+    .monitor-pane:first-child { border-right:1px solid #1e293b; }
+    .pane-header { padding:10px 16px; font-size:11px; font-weight:600; color:#64748b; text-transform:uppercase; letter-spacing:0.05em; background:#0f172a; border-bottom:1px solid #1e293b; display:flex; align-items:center; justify-content:space-between; }
+    .pane-content { flex:1; overflow-y:auto; padding:16px; font-family:'JetBrains Mono','Menlo',monospace; font-size:12px; line-height:1.7; white-space:pre-wrap; word-break:break-word; }
+    .pane-content:empty::after { content:'Waiting for review...'; color:#475569; font-family:'Inter',sans-serif; font-size:14px; }
+
+    /* Score Bar */
+    #score-bar { display:flex; gap:16px; padding:8px 16px; background:#0f172a; border-top:1px solid #1e293b; }
+    .score-item { flex:1; text-align:center; }
+    .score-value { font-size:18px; font-weight:700; }
+    .score-label { font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:0.03em; margin-top:2px; }
+    .score-mini-bar { height:3px; border-radius:2px; margin-top:4px; background:#1e293b; overflow:hidden; }
+    .score-mini-fill { height:100%; border-radius:2px; transition:width 0.5s; }
+
+    /* Decision Gate */
+    #decision-gate { display:flex; align-items:center; gap:12px; padding:12px 16px; background:#0f172a; border-top:1px solid #1e293b; }
+    .decision-status { flex:1; font-size:13px; color:#f59e0b; display:flex; align-items:center; gap:8px; }
+    .decision-status .status-dot { width:6px; height:6px; }
+  </style>
+</head>
+<body>
+  <!-- Status Bar -->
+  <div id="status-bar">
+    <div class="status-dot amber" id="status-dot"></div>
+    <span id="status-text">Starting...</span>
+    <span style="flex:1"></span>
+    <span class="review-count" id="review-count"></span>
+    <button class="btn btn-primary" id="btn-start" onclick="startEngine()">Start Review Engine</button>
+    <button class="btn btn-danger" id="btn-stop" onclick="stopEngine()" style="display:none">Stop Engine</button>
+    <button class="btn btn-outline btn-sm" onclick="window.aigov?.openLogs()">Logs</button>
+  </div>
+
+  <!-- Activity Board -->
+  <div id="activity-bar" onclick="toggleReviewList()">
+    <span class="activity-item"><strong id="activity-repo">—</strong></span>
+    <span class="branch-arrow">→</span>
+    <span class="activity-item" id="activity-branch">— → —</span>
+    <span class="pr-badge" id="activity-pr">PR #—</span>
+    <span class="activity-item">by <strong id="activity-author">—</strong></span>
+    <span style="flex:1"></span>
+    <span style="font-size:10px;color:#475569;" id="review-count-small"></span>
+    <div id="review-list"></div>
+  </div>
+
+  <!-- Main Content -->
+  <div id="main">
+    <div id="config-panel">
+      <div class="config-section">
+        <label class="config-label">Model</label>
+        <select id="config-model">
+          <option value="deepseek">DeepSeek (Default)</option>
+          <option value="claude">Claude (Anthropic)</option>
+        </select>
+      </div>
+      <div class="config-section">
+        <label class="config-label">Review Mode</label>
+        <select id="config-mode">
+          <option value="hitl" selected>Human-In-The-Loop</option>
+          <option value="auto">Automatic</option>
+        </select>
+      </div>
+      <div class="config-section">
+        <label class="config-label">Code Context</label>
+        <select id="config-context">
+          <option value="changed" selected>Changed Files Only</option>
+          <option value="full" disabled>Full Repository (coming soon)</option>
+        </select>
+      </div>
+      <div class="config-section">
+        <label class="config-label">System Persona</label>
+        <textarea id="config-persona" placeholder="Focus on security and performance...">Focus on code quality, security, performance, and adherence to best practices. Flag any issues with error handling, input validation, or potential bugs.</textarea>
+      </div>
+    </div>
+
+    <div id="monitor">
+      <div class="monitor-pane">
+        <div class="pane-header">Diff <span id="diff-file-name" style="color:#94a3b8;font-weight:400;text-transform:none;"></span></div>
+        <div class="pane-content" id="diff-content"></div>
+      </div>
+      <div class="monitor-pane">
+        <div class="pane-header">AI Review</div>
+        <div class="pane-content" id="review-content"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Score Bar -->
+  <div id="score-bar">
+    <div class="score-item">
+      <div class="score-value" style="color:#22c55e" id="score-compliance">—</div>
+      <div class="score-label">Compliance</div>
+      <div class="score-mini-bar"><div class="score-mini-fill" style="width:0%;background:#22c55e" id="score-bar-c"></div></div>
+    </div>
+    <div class="score-item">
+      <div class="score-value" style="color:#3b82f6" id="score-efficiency">—</div>
+      <div class="score-label">Efficiency</div>
+      <div class="score-mini-bar"><div class="score-mini-fill" style="width:0%;background:#3b82f6" id="score-bar-e"></div></div>
+    </div>
+    <div class="score-item">
+      <div class="score-value" style="color:#8b5cf6" id="score-coverage">—</div>
+      <div class="score-label">Coverage</div>
+      <div class="score-mini-bar"><div class="score-mini-fill" style="width:0%;background:#8b5cf6" id="score-bar-v"></div></div>
+    </div>
+  </div>
+
+  <!-- Decision Gate -->
+  <div id="decision-gate">
+    <div class="decision-status" id="decision-status">
+      <div class="status-dot" style="background:#475569"></div>
+      <span>No active review</span>
+    </div>
+    <button class="btn btn-primary" id="btn-approve" disabled onclick="approveReview()">Approve &amp; Comment</button>
+    <button class="btn btn-danger" id="btn-cancel" disabled onclick="cancelReview()">Cancel Review</button>
+    <button class="btn" id="btn-trigger" disabled onclick="triggerReview()">Manually Trigger Review</button>
+  </div>
+
+  <script src="https://cdn.socket.io/4.7.0/socket.io.min.js"></script>
+  <script src="review-gate.js"></script>
+</body>
+</html>

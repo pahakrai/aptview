@@ -1,5 +1,14 @@
 import { useState, useEffect } from 'react';
-import { BarChart3, CheckCircle, AlertTriangle, XCircle, TrendingUp } from 'lucide-react';
+import {
+  BarChart3,
+  CheckCircle,
+  AlertTriangle,
+  XCircle,
+  ShieldCheck,
+  Gauge,
+  Target,
+  TrendingUp,
+} from 'lucide-react';
 import type { ApiResponse } from '@aigov/shared-types';
 import api from '../lib/api';
 
@@ -10,6 +19,9 @@ interface OrgStats {
   warnings: number;
   scopeCreepDetected: number;
   avgDurationMs: number;
+  avgCompliance: number | null;
+  avgEfficiency: number | null;
+  avgCoverage: number | null;
 }
 
 export default function Dashboard() {
@@ -22,14 +34,10 @@ export default function Dashboard() {
       .get<ApiResponse<OrgStats>>(`/audits/org/${demoOrgId}/stats`)
       .then((res) => setStats(res.data.data))
       .catch(() => {
-        // Use placeholder data if API isn't available
         setStats({
-          totalAudits: 0,
-          passed: 0,
-          failed: 0,
-          warnings: 0,
-          scopeCreepDetected: 0,
-          avgDurationMs: 0,
+          totalAudits: 0, passed: 0, failed: 0, warnings: 0,
+          scopeCreepDetected: 0, avgDurationMs: 0,
+          avgCompliance: null, avgEfficiency: null, avgCoverage: null,
         });
       })
       .finally(() => setLoading(false));
@@ -37,61 +45,99 @@ export default function Dashboard() {
 
   if (loading) {
     return (
-      <div className="max-w-7xl mx-auto px-4 py-12 text-center text-gray-500">
-        Loading dashboard...
+      <div className="max-w-7xl mx-auto px-4 py-20 text-center">
+        <div className="inline-block w-6 h-6 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin" />
+        <p className="mt-4 text-sm text-slate-500">Loading dashboard...</p>
       </div>
     );
   }
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-8">
-      <h1 className="text-2xl font-bold text-gray-900 mb-8">Dashboard</h1>
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-8">
+        <div>
+          <h1 className="text-2xl font-bold text-white">Dashboard</h1>
+          <p className="text-sm text-slate-500 mt-1">
+            Overview of your AI code governance metrics
+          </p>
+        </div>
+      </div>
 
-      {/* Stats grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+      {/* Verdict stats */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <StatCard
-          icon={<BarChart3 className="w-6 h-6" />}
+          icon={<BarChart3 className="w-5 h-5" />}
           label="Total Audits"
           value={stats?.totalAudits ?? 0}
-          color="text-indigo-600"
-          bgColor="bg-indigo-50"
+          color="text-slate-300"
+          iconBg="bg-slate-500/10"
+          iconBorder="border-slate-500/20"
         />
         <StatCard
-          icon={<CheckCircle className="w-6 h-6" />}
+          icon={<CheckCircle className="w-5 h-5" />}
           label="Passed"
           value={stats?.passed ?? 0}
-          color="text-green-600"
-          bgColor="bg-green-50"
+          color="text-emerald-400"
+          iconBg="bg-emerald-500/10"
+          iconBorder="border-emerald-500/20"
         />
         <StatCard
-          icon={<XCircle className="w-6 h-6" />}
+          icon={<XCircle className="w-5 h-5" />}
           label="Failed"
           value={stats?.failed ?? 0}
-          color="text-red-600"
-          bgColor="bg-red-50"
+          color="text-red-400"
+          iconBg="bg-red-500/10"
+          iconBorder="border-red-500/20"
         />
         <StatCard
-          icon={<AlertTriangle className="w-6 h-6" />}
+          icon={<AlertTriangle className="w-5 h-5" />}
           label="Warnings"
           value={stats?.warnings ?? 0}
-          color="text-yellow-600"
-          bgColor="bg-yellow-50"
+          color="text-amber-400"
+          iconBg="bg-amber-500/10"
+          iconBorder="border-amber-500/20"
         />
       </div>
 
-      {/* Scope Creep card */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-8">
+      {/* Score cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <ScoreCard
+          icon={<ShieldCheck className="w-5 h-5" />}
+          label="Avg Compliance"
+          value={stats?.avgCompliance ?? null}
+          color="emerald"
+          description="Standards followed"
+        />
+        <ScoreCard
+          icon={<Gauge className="w-5 h-5" />}
+          label="Avg Efficiency"
+          value={stats?.avgEfficiency ?? null}
+          color="blue"
+          description="Code vs estimate"
+        />
+        <ScoreCard
+          icon={<Target className="w-5 h-5" />}
+          label="Avg Coverage"
+          value={stats?.avgCoverage ?? null}
+          color="violet"
+          description="Requirements met"
+        />
+      </div>
+
+      {/* Scope creep */}
+      <div className="card p-6">
         <div className="flex items-center gap-3 mb-4">
-          <TrendingUp className="w-5 h-5 text-orange-600" />
-          <h2 className="text-lg font-semibold text-gray-900">
-            AI Scope Creep
-          </h2>
+          <div className="p-2 rounded-lg bg-orange-500/10 border border-orange-500/20">
+            <TrendingUp className="w-5 h-5 text-orange-400" />
+          </div>
+          <div>
+            <h2 className="text-sm font-semibold text-white">AI Scope Creep</h2>
+            <p className="text-xs text-slate-500">PRs flagged for over-engineering</p>
+          </div>
         </div>
-        <p className="text-3xl font-bold text-orange-600 mb-2">
+        <p className="text-4xl font-bold text-orange-400">
           {stats?.scopeCreepDetected ?? 0}
-        </p>
-        <p className="text-sm text-gray-500">
-          Total PRs flagged for scope creep
         </p>
       </div>
     </div>
@@ -99,25 +145,69 @@ export default function Dashboard() {
 }
 
 function StatCard({
-  icon,
-  label,
-  value,
-  color,
-  bgColor,
+  icon, label, value, color, iconBg, iconBorder,
 }: {
   icon: React.ReactNode;
   label: string;
   value: number;
   color: string;
-  bgColor: string;
+  iconBg: string;
+  iconBorder: string;
 }) {
   return (
-    <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+    <div className="stat-card">
       <div className="flex items-center gap-3 mb-3">
-        <div className={`p-2 rounded-lg ${bgColor} ${color}`}>{icon}</div>
-        <span className="text-sm font-medium text-gray-500">{label}</span>
+        <div className={`p-2 rounded-lg ${iconBg} ${iconBorder} border ${color}`}>
+          {icon}
+        </div>
+        <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">
+          {label}
+        </span>
       </div>
       <p className={`text-3xl font-bold ${color}`}>{value}</p>
+    </div>
+  );
+}
+
+function ScoreCard({
+  icon, label, value, color, description,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: number | null;
+  color: 'emerald' | 'blue' | 'violet';
+  description: string;
+}) {
+  const colorMap = {
+    emerald: { text: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/20', bar: 'bg-emerald-500' },
+    blue: { text: 'text-blue-400', bg: 'bg-blue-500/10', border: 'border-blue-500/20', bar: 'bg-blue-500' },
+    violet: { text: 'text-violet-400', bg: 'bg-violet-500/10', border: 'border-violet-500/20', bar: 'bg-violet-500' },
+  };
+  const c = colorMap[color];
+  const score = value ?? 0;
+  const hasData = value !== null;
+
+  return (
+    <div className="card p-5">
+      <div className="flex items-center gap-2.5 mb-3">
+        <div className={`p-1.5 rounded-md ${c.bg} ${c.border} border ${c.text}`}>
+          {icon}
+        </div>
+        <span className="text-sm font-medium text-slate-300">{label}</span>
+      </div>
+
+      <p className={`text-3xl font-bold mb-3 ${c.text}`}>
+        {hasData ? `${score}%` : '—'}
+      </p>
+
+      <div className="score-bar">
+        <div
+          className={`score-bar-fill ${c.bar}`}
+          style={{ width: `${hasData ? score : 0}%` }}
+        />
+      </div>
+
+      <p className="text-xs text-slate-500 mt-2">{description}</p>
     </div>
   );
 }

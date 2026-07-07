@@ -1,12 +1,7 @@
 import { useState, useEffect } from 'react';
+import { FileCheck, AlertCircle, CheckCircle2, EyeOff } from 'lucide-react';
 import type { CodeGuideline } from '@aigov/shared-types';
 import api from '../lib/api';
-
-const severityColors: Record<string, string> = {
-  error: 'text-red-700 bg-red-50 border-red-200',
-  warning: 'text-yellow-700 bg-yellow-50 border-yellow-200',
-  info: 'text-blue-700 bg-blue-50 border-blue-200',
-};
 
 export default function StandardsList() {
   const [guidelines, setGuidelines] = useState<CodeGuideline[]>([]);
@@ -23,52 +18,70 @@ export default function StandardsList() {
 
   if (loading) {
     return (
-      <div className="max-w-7xl mx-auto px-4 py-12 text-center text-gray-500">
-        Loading standards...
+      <div className="max-w-7xl mx-auto px-4 py-20 text-center">
+        <div className="inline-block w-6 h-6 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin" />
+        <p className="mt-4 text-sm text-slate-500">Loading standards...</p>
       </div>
     );
   }
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-8">
-      <div className="flex justify-between items-center mb-8">
-        <h1 className="text-2xl font-bold text-gray-900">Coding Standards</h1>
-        <span className="text-sm text-gray-500">
-          {guidelines.length} guideline{guidelines.length !== 1 ? 's' : ''}
-        </span>
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="flex items-center justify-between mb-8">
+        <div>
+          <h1 className="text-2xl font-bold text-white">Coding Standards</h1>
+          <p className="text-sm text-slate-500 mt-1">
+            {guidelines.length} active guideline{guidelines.length !== 1 ? 's' : ''}
+          </p>
+        </div>
       </div>
 
       {guidelines.length === 0 ? (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center text-gray-500">
-          No standards configured. Add coding guidelines to begin governing AI-generated code.
+        <div className="card p-12 text-center">
+          <FileCheck className="w-10 h-10 text-slate-700 mx-auto mb-3" />
+          <p className="text-slate-400 font-medium">No standards configured</p>
+          <p className="text-sm text-slate-600 mt-1">
+            Add coding guidelines to begin governing AI-generated code.
+          </p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {guidelines.map((g) => (
-            <div
-              key={g.id}
-              className="bg-white rounded-lg shadow-sm border border-gray-200 p-5"
-            >
-              <div className="flex items-center justify-between mb-2">
-                <h3 className="font-semibold text-gray-900">{g.name}</h3>
-                <span
-                  className={`text-xs font-medium px-2 py-1 rounded-full border ${severityColors[g.severity] || 'text-gray-700 bg-gray-50 border-gray-200'}`}
-                >
-                  {g.severity}
-                </span>
+            <div key={g.id} className="card p-5 hover:border-slate-700 transition-colors duration-150">
+              {/* Header */}
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-semibold text-white text-[15px]">{g.name}</h3>
+                <SeverityBadge severity={g.severity} />
               </div>
+
+              {/* Description */}
               {g.description && (
-                <p className="text-sm text-gray-600 mb-3">{g.description}</p>
+                <p className="text-sm text-slate-400 mb-3 leading-relaxed">
+                  {g.description}
+                </p>
               )}
-              <code className="text-xs bg-gray-100 px-2 py-1 rounded text-gray-700">
-                {g.pattern}
-              </code>
-              <div className="flex gap-2 mt-3">
-                <span className="text-xs text-gray-400">{g.category}</span>
+
+              {/* Pattern */}
+              <div className="bg-surface-950 border border-slate-800 rounded-lg px-3 py-2 mb-3">
+                <code className="text-xs font-mono text-slate-300 break-all">
+                  {g.pattern}
+                </code>
+              </div>
+
+              {/* Footer */}
+              <div className="flex items-center gap-3 text-xs">
+                <span className="text-slate-600 font-mono">{g.category}</span>
+                <span className="text-slate-700">·</span>
                 {g.isEnabled ? (
-                  <span className="text-xs text-green-600">Active</span>
+                  <span className="flex items-center gap-1 text-emerald-500">
+                    <CheckCircle2 className="w-3 h-3" />
+                    Active
+                  </span>
                 ) : (
-                  <span className="text-xs text-gray-400">Disabled</span>
+                  <span className="flex items-center gap-1 text-slate-600">
+                    <EyeOff className="w-3 h-3" />
+                    Disabled
+                  </span>
                 )}
               </div>
             </div>
@@ -77,4 +90,17 @@ export default function StandardsList() {
       )}
     </div>
   );
+}
+
+function SeverityBadge({ severity }: { severity: string }) {
+  switch (severity) {
+    case 'error':
+      return <span className="badge-danger"><AlertCircle className="w-3 h-3" /> Error</span>;
+    case 'warning':
+      return <span className="badge-warning"><AlertCircle className="w-3 h-3" /> Warning</span>;
+    case 'info':
+      return <span className="badge-neutral">Info</span>;
+    default:
+      return <span className="badge-neutral">{severity}</span>;
+  }
 }

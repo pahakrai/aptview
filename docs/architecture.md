@@ -49,6 +49,35 @@ GitHub PR webhook
           → Stores audit record in PostgreSQL
 ```
 
+## HITL Review Pipeline (Desktop App)
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Electron Desktop App                            │
+│  Service Control | Status | Activity Board | HITL Gate | Config    │
+└────────────────────────────┬────────────────────────────────────────┘
+                             │ WebSocket + HTTP
+                             ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                        NestJS Backend                                 │
+│                                                                       │
+│  Webhook → HMAC Validation                                           │
+│      │                                                                │
+│      ├─→ BullMQ 'audits' queue → AuditProcessor (scoring)            │
+│      │     └─→ PostgreSQL: ai_audits (compliance%, efficiency%)       │
+│      │                                                                 │
+│      └─→ BullMQ 'reviews' queue → ReviewProcessor                     │
+│            └─→ LangGraph Pipeline:                                    │
+│                  fetchDiff → generateReview → INTERRUPT               │
+│                      │                                                │
+│                      ▼ (human clicks Approve)                         │
+│                  postToGitHub → Octokit → PR comment                  │
+│                                                                       │
+│  Checkpoints: Redis (MemorySaver)                                    │
+│  Streaming:   Redis Pub/Sub → WebSocket → Electron                   │
+└───────────────────────────────────────────────────────────────────────┘
+```
+
 ## Key Design Decisions
 
 1. **Monolith, not microservices**: Single NestJS app with feature modules. Simpler to develop and deploy until you have 100+ customers. The module boundaries are clean — extracting a service later is a refactor, not a rewrite.
@@ -108,7 +137,18 @@ DELETE /api/v1/standards/:id              Delete guideline
 GET    /api/v1/standards/org/:orgId/context   Get Markdown context
 GET    /api/v1/standards/org/:orgId/violations/top  Top violations
 
-POST   /api/v1/webhooks/github            GitHub PR webhook
+POST   /api/v1/webhooks/github            GitHub PR webhook (HMAC validated)
 POST   /api/v1/webhooks/jira              Jira issue webhook
 POST   /api/v1/webhooks/linear            Linear issue webhook
+
+POST   /api/v1/reviews/start              Start HITL review (webhook → LangGraph)
+POST   /api/v1/reviews/:id/approve        Approve review → post to GitHub
+POST   /api/v1/reviews/:id/cancel         Cancel review → discard
+GET    /api/v1/reviews/pending            List pending reviews
+GET    /api/v1/reviews/:id                Get review status + text
+
+GET    /api/v1/audits/:id/scores          Get compliance/efficiency/coverage scores
+GET    /api/v1/audits/org/:orgId/score-trends  Weekly score averages
+GET    /api/v1/decomposition/:id/sub-tasks     List quantifiable sub-tasks
+POST   /api/v1/decomposition/sprint       Decompose a sprint into tasks
 ```

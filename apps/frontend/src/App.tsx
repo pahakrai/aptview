@@ -1,67 +1,92 @@
-import { Routes, Route, Link } from 'react-router-dom';
+import { Routes, Route, Link, useLocation } from 'react-router-dom';
+import { Shield, LayoutDashboard, ScrollText, FileCheck, Settings } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import AuditHistory from './pages/AuditHistory';
 import StandardsList from './pages/StandardsList';
-import Settings from './pages/Settings';
+import SettingsPage from './pages/Settings';
 
 function App() {
+  const location = useLocation();
+
+  const navItems = [
+    { to: '/', label: 'Dashboard', icon: LayoutDashboard },
+    { to: '/audits', label: 'Audit History', icon: ScrollText },
+    { to: '/standards', label: 'Standards', icon: FileCheck },
+  ];
+
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="min-h-screen flex flex-col bg-surface-950">
       {/* Navbar */}
-      <nav className="bg-white shadow-sm border-b border-gray-200">
+      <header className="sticky top-0 z-50 bg-surface-900/80 backdrop-blur-md border-b border-slate-800">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-16">
+          <div className="flex items-center justify-between h-14">
+            {/* Logo */}
             <div className="flex items-center gap-8">
-              <Link to="/" className="text-xl font-bold text-indigo-600">
-                AI Code Governance
+              <Link to="/" className="flex items-center gap-2.5 group">
+                <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
+                  <Shield className="w-4 h-4 text-emerald-400" />
+                </div>
+                <span className="text-[15px] font-semibold text-white tracking-tight">
+                  AIGov
+                </span>
               </Link>
-              <div className="hidden sm:flex gap-6">
-                <Link
-                  to="/"
-                  className="text-sm font-medium text-gray-600 hover:text-gray-900"
-                >
-                  Dashboard
-                </Link>
-                <Link
-                  to="/audits"
-                  className="text-sm font-medium text-gray-600 hover:text-gray-900"
-                >
-                  Audit History
-                </Link>
-                <Link
-                  to="/standards"
-                  className="text-sm font-medium text-gray-600 hover:text-gray-900"
-                >
-                  Standards
-                </Link>
-              </div>
+
+              {/* Nav links */}
+              <nav className="hidden sm:flex items-center gap-1">
+                {navItems.map((item) => {
+                  const isActive =
+                    item.to === '/'
+                      ? location.pathname === '/'
+                      : location.pathname.startsWith(item.to);
+                  return (
+                    <Link
+                      key={item.to}
+                      to={item.to}
+                      className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors duration-150 ${
+                        isActive
+                          ? 'bg-slate-800 text-white'
+                          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+                      }`}
+                    >
+                      <item.icon className="w-4 h-4" />
+                      {item.label}
+                    </Link>
+                  );
+                })}
+              </nav>
             </div>
-            <div className="flex items-center gap-4">
+
+            {/* Right side */}
+            <div className="flex items-center gap-3">
               <Link
                 to="/settings"
-                className="text-sm font-medium text-gray-500 hover:text-gray-700"
+                className={`p-2 rounded-lg transition-colors duration-150 ${
+                  location.pathname === '/settings'
+                    ? 'bg-slate-800 text-white'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+                }`}
               >
-                Settings
+                <Settings className="w-4 h-4" />
               </Link>
             </div>
           </div>
         </div>
-      </nav>
+      </header>
 
-      {/* Main content */}
+      {/* Main */}
       <main className="flex-1">
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/audits" element={<AuditHistory />} />
           <Route path="/standards" element={<StandardsList />} />
-          <Route path="/settings" element={<Settings />} />
+          <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </main>
 
       {/* Footer */}
-      <footer className="bg-white border-t border-gray-200 py-4">
-        <div className="max-w-7xl mx-auto px-4 text-center text-sm text-gray-500">
-          AI Code Governance Platform — Governing the requirement→task→code pipeline
+      <footer className="border-t border-slate-800 py-3">
+        <div className="max-w-7xl mx-auto px-4 text-center text-xs text-slate-600">
+          AIGov — Governing the requirement → task → code pipeline
         </div>
       </footer>
     </div>

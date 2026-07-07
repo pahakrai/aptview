@@ -10,6 +10,7 @@ import { AuditsModule } from './modules/audits/audits.module';
 import { DecompositionModule } from './modules/decomposition/decomposition.module';
 import { StandardsModule } from './modules/standards/standards.module';
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
+import { ReviewsModule } from './modules/reviews/reviews.module';
 import { HealthController } from './modules/health.controller';
 
 @Module({
@@ -41,6 +42,7 @@ import { HealthController } from './modules/health.controller';
     DecompositionModule,
     StandardsModule,
     WebhooksModule,
+    ReviewsModule,
   ],
   controllers: [HealthController],
 })
