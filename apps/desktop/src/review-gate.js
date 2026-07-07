@@ -20,8 +20,7 @@ if (window.aigov) {
   window.aigov.onStatusUpdate(({ status, message }) => {
     const dot = document.getElementById('status-dot');
     const text = document.getElementById('status-text');
-    const btnStart = document.getElementById('btn-start');
-    const btnStop = document.getElementById('btn-stop');
+    const btnRetry = document.getElementById('btn-retry');
 
     dot.className = 'status-dot';
     text.textContent = message;
@@ -29,40 +28,31 @@ if (window.aigov) {
     switch (status) {
       case 'connected':
         dot.classList.add('green');
-        btnStart.style.display = 'none';
-        btnStop.style.display = '';
+        btnRetry.style.display = 'none';
         startPolling();
         connectWebSocket();
         break;
+      case 'error':
       case 'stopped':
         dot.classList.add('red');
-        btnStart.style.display = '';
-        btnStop.style.display = 'none';
+        btnRetry.style.display = '';
         disconnectWebSocket();
         stopPolling();
         break;
-      case 'error':
-        dot.classList.add('red');
-        btnStart.style.display = '';
-        btnStop.style.display = 'none';
-        break;
       default:
         dot.classList.add('amber');
+        btnRetry.style.display = 'none';
         break;
     }
   });
 }
 
 // ===========================================================================
-// Engine control
+// Connection control
 // ===========================================================================
 
-async function startEngine() {
-  if (window.aigov) await window.aigov.startEngine();
-}
-
-async function stopEngine() {
-  if (window.aigov) await window.aigov.stopEngine();
+async function retryConnection() {
+  if (window.aigov) await window.aigov.retryConnection();
 }
 
 // ===========================================================================

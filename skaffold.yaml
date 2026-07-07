@@ -1,0 +1,69 @@
+# ============================================================
+# Skaffold configuration — AIGov (development)
+#
+# Dev loop:
+#   - Backend: Docker layer cache → fast rebuilds on source change
+#   - Frontend: file sync → HMR on save
+#   - Database + Redis: deployed via K8s manifests (no rebuild needed)
+#
+# Usage:
+#   skaffold dev                     Dev mode: watch + port-forward
+#   skaffold run                     One-shot deploy
+#   skaffold build                   Build images only
+#   skaffold delete                  Tear down
+# ============================================================
+apiVersion: skaffold/v4beta5
+kind: Config
+metadata:
+  name: aigov
+
+build:
+  tagPolicy:
+    customTemplate:
+      template: "dev"
+  artifacts:
+    - image: aigov-backend
+      context: .
+      docker:
+        dockerfile: apps/backend/Dockerfile
+        target: development
+    - image: aigov-frontend
+      context: .
+      docker:
+        dockerfile: apps/frontend/Dockerfile
+        target: development
+      sync:
+        manual:
+          - src: 'apps/frontend/src/**/*.{ts,tsx,css}'
+            dest: /app/
+  local:
+    useBuildkit: true
+    push: false
+
+manifests:
+  rawYaml:
+    - k8s/namespaces.yaml
+    - k8s/configmap.yaml
+    - k8s/secrets.yaml
+    - k8s/postgres.yaml
+    - k8s/redis.yaml
+    - k8s/rbac.yaml
+    - k8s/network-policy.yaml
+    - k8s/backend.yaml
+    - k8s/frontend.yaml
+
+deploy:
+  kubectl: {}
+  statusCheckDeadlineSeconds: 300
+
+portForward:
+  - resourceType: service
+    resourceName: backend
+    namespace: aigov
+    port: 3000
+    localPort: 3000
+  - resourceType: service
+    resourceName: frontend
+    namespace: aigov
+    port: 80
+    localPort: 5173

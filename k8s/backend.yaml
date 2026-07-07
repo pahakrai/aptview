@@ -70,7 +70,7 @@ spec:
       serviceAccountName: backend-sa
       containers:
         - name: backend
-          image: aigov-codewhale-runner:latest  # TODO: separate backend image
+          image: aigov-backend:latest
           imagePullPolicy: IfNotPresent
           command: ["node"]
           args: ["dist/main"]

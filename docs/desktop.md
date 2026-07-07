@@ -6,18 +6,24 @@ with a human-in-the-loop (HITL) control panel.
 ## Architecture
 
 ```
+┌─── Terminal 1: skaffold dev ───────────────────────────────────────┐
+│                                                                      │
+│  Builds images → deploys to K8s → port-forwards :3000 + :5173      │
+│  PostgreSQL, Redis, Backend, Frontend — all managed by Skaffold     │
+└──────────────────────────────────────────────────────────────────────┘
+                     │
+                     │ localhost:3000
+                     ▼
 ┌─── Electron Main Process ──────────────────────────────────────────┐
 │                                                                      │
 │  On startup:                                                         │
-│    1. docker compose up (PostgreSQL + Redis)                        │
-│    2. yarn db:push (migrations)                                     │
-│    3. Spawns NestJS backend (child process)                         │
-│    4. Polls /health until 200                                       │
-│    5. Opens BrowserWindow with HITL UI                              │
+│    1. Opens BrowserWindow with HITL UI                              │
+│    2. Polls /health every 3s until backend responds                 │
+│    3. Shows "Connected" when reachable                              │
+│    4. Shows "Backend not ready — run skaffold dev" if unreachable   │
 │                                                                      │
 │  On shutdown:                                                        │
-│    → SIGTERM to NestJS child process                                │
-│    → Docker containers stay running                                 │
+│    → Window closes. Skaffold keeps running in Terminal 1.           │
 └─────────────────────────────────────────────────────────────────────┘
 
 ┌─── Renderer (BrowserWindow) ───────────────────────────────────────┐
@@ -46,19 +52,18 @@ with a human-in-the-loop (HITL) control panel.
 yarn workspace aigov-desktop install
 ```
 
-## Running in development
+## Running
+
+**Prerequisite:** `skaffold dev` must be running in a separate terminal.
 
 ```bash
+# Terminal 2
 yarn workspace aigov-desktop start
-# Opens the Electron window directly
+# Opens the review panel, connects to localhost:3000
 ```
 
-Or with dev flags:
-
-```bash
-yarn workspace aigov-desktop dev
-# Opens with DevTools enabled
-```
+The app polls `/health` and shows connection status. If the backend is unreachable,
+it displays "Backend not ready — run `skaffold dev`" with a Retry button.
 
 ## Building for distribution
 
@@ -76,12 +81,12 @@ Outputs:
 
 ## UI features
 
-### Service Control Bar
+### Status Bar
 
-- **Start Review Engine** — starts Docker containers, runs migrations, spawns backend
-- **Stop Review Engine** — gracefully stops NestJS (Docker stays running)
-- **Status indicator** — green = connected, amber = starting, red = stopped/error
-- **Logs button** — opens dialog with log location info
+- **Green dot** — connected to backend, listening for reviews
+- **Amber dot** — connecting, waiting for backend health check
+- **Red dot** — backend unreachable, shows "run `skaffold dev`"
+- **Retry Connection** — re-checks backend health (appears when disconnected)
 
 ### Activity Board
 
@@ -122,9 +127,9 @@ Split-pane view:
 
 The desktop app requires:
 
-- **Docker Desktop** running (for PostgreSQL + Redis)
-- **Node.js 20+** (for spawning the backend)
-- **Backend built**: `yarn workspace backend build` before first run
+- **Skaffold** running in a separate terminal (`skaffold dev`)
+- **Docker Desktop** running (Skaffold uses it to build images)
+- **kubectl** configured (Skaffold uses it to deploy to K8s)
 
 ## File structure
 

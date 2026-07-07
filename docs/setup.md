@@ -42,33 +42,22 @@ AUDIT_MODE=sdk   # inline | sdk | sandbox
 DECOMP_MODE=inline
 ```
 
-## Step 3 — Start infrastructure (PostgreSQL + Redis)
+## Step 3 — Start the platform (Skaffold)
 
 ```bash
-docker compose -f docker-compose.infra.yml up -d
+# Terminal 1 — keep this running
+skaffold dev
 ```
 
-Verify:
+Skaffold handles everything:
 
-```bash
-docker ps
-# Should show postgres and redis containers running
-```
-
-## Step 4 — Push database schema
-
-```bash
-yarn db:push
-```
-
-This creates all tables: `organizations`, `repositories`, `ai_audits`, `code_guidelines`,
-`decomposed_tasks`, `sub_tasks`, `enforcement_events`, `scope_violations`.
-
-## Step 5 — Start the backend
-
-```bash
-yarn workspace backend dev
-```
+| Skaffold does | What happens |
+|---|---|
+| Builds images | `aigov-backend:dev` + `aigov-frontend:dev` |
+| Deploys to K8s | PostgreSQL, Redis, Backend, Frontend |
+| Pushes DB schema | Backend startup runs migrations |
+| Port-forwards | `localhost:3000` → backend, `localhost:5173` → frontend |
+| Watches for changes | Auto-rebuilds on source file changes |
 
 Verify:
 
@@ -80,14 +69,16 @@ curl http://localhost:3000/docs
 # → Swagger UI with all endpoints
 ```
 
-## Step 6 — Start the frontend (for Dashboard)
+**Alternative without Skaffold** — use Docker Compose instead:
 
 ```bash
-yarn workspace frontend dev
-# → http://localhost:5173
+docker compose -f docker-compose.infra.yml up -d   # PostgreSQL + Redis
+yarn db:push                                        # Push schema
+yarn workspace backend dev                          # Backend on :3000
+yarn workspace frontend dev                         # Frontend on :5173
 ```
 
-## Step 7 — Set up Cloudflare Tunnel
+## Step 4 — Set up Cloudflare Tunnel
 
 ### 7a. Install cloudflared
 
@@ -123,7 +114,7 @@ curl https://aigov.yourdomain.com/api/v1/health
 # → { "status": "ok" }
 ```
 
-## Step 8 — Configure GitHub Webhook
+## Step 5 — Configure GitHub Webhook
 
 ### 8a. Create a GitHub Personal Access Token
 
@@ -183,19 +174,20 @@ WEBHOOK_SECRET=<the-hex-string>
 }
 ```
 
-## Step 9 — Start the Desktop App
+## Step 6 — Start the Desktop App
 
 ```bash
+# Terminal 2 (while skaffold dev is running in Terminal 1)
 yarn workspace aigov-desktop start
 ```
 
 The app will:
-1. Ensure Docker containers are running
-2. Spawn the NestJS backend
-3. Wait for `/health` to return 200
-4. Open the HITL review panel
+1. Open the HITL review panel
+2. Poll `/health` until the backend is reachable
+3. Show "Connected" when Skaffold has the backend running
+4. Show "Backend not ready — run `skaffold dev`" if unreachable
 
-## Step 10 — Test the full flow
+## Step 7 — Test the full flow
 
 ```bash
 # 1. Open a PR in your GitHub repo

@@ -170,6 +170,32 @@ server {
 | `pull_requests: write` | Post review comments |
 | `webhooks: read & write` | (Only needed if creating webhook programmatically) |
 
+## Running locally with Skaffold
+
+Skaffold provides a production-like local development environment using the same
+K8s manifests you'd deploy to a real cluster.
+
+```bash
+# Terminal 1 — starts the platform
+skaffold dev
+
+# Terminal 2 — opens the review panel
+yarn workspace aigov-desktop start
+```
+
+Skaffold manages the full stack:
+
+| Component | K8s Resource | Port |
+|---|---|---|
+| PostgreSQL | StatefulSet + PVC | 5432 (cluster-internal) |
+| Redis | Deployment | 6379 (cluster-internal) |
+| Backend | Deployment (2 replicas) | 3000 (port-forwarded) |
+| Frontend | Deployment (2 replicas) | 5173 (port-forwarded) |
+
+The backend connects to PostgreSQL and Redis via K8s DNS:
+- `postgres.aigov.svc.cluster.local:5432`
+- `redis.aigov.svc.cluster.local:6379`
+
 ## Security notes
 
 - Webhook HMAC uses SHA-256 with constant-time comparison (prevents timing atacks)

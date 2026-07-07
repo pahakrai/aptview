@@ -23,27 +23,27 @@ Two pipelines, one decision gate. Scores are automatic. Reviews wait for you.
 ## Quick Start
 
 ```bash
-# Prerequisites: Node 20+, Docker Desktop, GitHub PAT, DeepSeek API key
+# Prerequisites: Node 20+, Docker Desktop, kubectl, Skaffold, GitHub PAT, DeepSeek API key
 
-# 1. Install
+# 1. Install dependencies
 git clone <repo> && cd codereviewer && yarn install
 
-# 2. Configure
+# 2. Configure environment
 cp .env.example .env
 # Fill in: DEEPSEEK_API_KEY, GITHUB_TOKEN, WEBHOOK_SECRET, JWT_SECRET
 
-# 3. Start infrastructure
-docker compose -f docker-compose.infra.yml up -d   # PostgreSQL + Redis
+# 3. Start the platform (Terminal 1 — keep running)
+skaffold dev
+# → Builds images, deploys to K8s, port-forwards :3000 + :5173
+# → Watches for changes, auto-rebuilds
 
-# 4. Push database
-yarn db:push
-
-# 5. Launch desktop app (starts backend automatically)
+# 4. Launch the desktop app (Terminal 2)
 yarn workspace aigov-desktop start
+# → Opens review panel, connects to backend
 ```
 
-The desktop app handles everything — Docker, migrations, backend startup, and the
-review panel. No terminal commands after setup.
+Skaffold manages the entire stack — PostgreSQL, Redis, backend, frontend.
+The desktop app is a pure UI client. No Docker commands needed.
 
 For detailed setup (Cloudflare Tunnel, GitHub webhooks, environment config),
 see [docs/setup.md](docs/setup.md).
@@ -83,7 +83,7 @@ Approve when ready — the review posts to GitHub.
 | `inline` | Regex matching | <1s | Pattern-only checks |
 | `sandbox` | K8s + CodeWhale | 30-80s | Production isolation |
 
-Desktop defaults to `sdk` — no containers, no K8s, direct API calls.
+Skaffold deploys the backend with `AUDIT_MODE=sdk` by default — fast, direct API calls to DeepSeek/Claude. Switch to `sandbox` for production isolation.
 
 ## Architecture
 
