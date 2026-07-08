@@ -86,6 +86,10 @@ export const repositories = pgTable('repositories', {
   fullName: varchar('full_name', { length: 512 }).notNull(),
   provider: varchar('provider', { length: 50 }).notNull().default('github'),
   webhookSecret: varchar('webhook_secret', { length: 255 }),
+  reviewBranches: jsonb('review_branches')
+    .$type<string[]>()
+    .default(['dev'])
+    .notNull(),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),

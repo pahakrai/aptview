@@ -44,10 +44,31 @@ DECOMP_MODE=inline
 
 ## Step 3 — Start the platform (Skaffold)
 
+**For local development:**
+
 ```bash
 # Terminal 1 — keep this running
 skaffold dev
+# → Builds images, deploys to Docker Desktop K8s, port-forwards :3000 + :5173
+# → Watches for changes, auto-rebuilds
 ```
+
+**For staging/production:**
+
+```bash
+skaffold run -f skaffold.prod.yaml
+# → Builds images with git commit SHA tags
+# → Pushes to container registry
+# → Deploys to your production cluster
+# → No port-forward (use Ingress/Cloudflare)
+```
+
+**Two Skaffold configs:**
+
+| File | Purpose | Image tag | Port-forward | Watch |
+|---|---|---|---|---|
+| `skaffold.yaml` | Dev | `dev` (fixed) | :3000, :5173 | Yes |
+| `skaffold.prod.yaml` | Staging/Prod | Git SHA | None | No |
 
 Skaffold handles everything:
 

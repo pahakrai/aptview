@@ -68,6 +68,22 @@ spec:
         app.kubernetes.io/component: backend
     spec:
       serviceAccountName: backend-sa
+      # Init container: run database migrations before the backend starts
+      initContainers:
+        - name: db-migrate
+          image: aigov-backend:latest
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Running database migrations..."
+              cd /app && npx drizzle-kit push --config apps/backend/drizzle.config.ts
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: aigov-secrets
+                  key: DATABASE_URL
       containers:
         - name: backend
           image: aigov-backend:latest
@@ -97,6 +113,11 @@ spec:
                 secretKeyRef:
                   name: aigov-secrets
                   key: DATABASE_URL
+            - name: DEEPSEEK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aigov-secrets
+                  key: DEEPSEEK_API_KEY
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:

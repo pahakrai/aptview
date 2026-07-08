@@ -1,16 +1,16 @@
 # ============================================================
-# Skaffold configuration — AIGov (development)
+# Skaffold configuration — AIGov (Development)
 #
-# Dev loop:
-#   - Backend: Docker layer cache → fast rebuilds on source change
-#   - Frontend: file sync → HMR on save
-#   - Database + Redis: deployed via K8s manifests (no rebuild needed)
+# Local dev with Docker Desktop K8s. Watches for changes, auto-rebuilds,
+# and port-forwards the backend + frontend to localhost.
 #
 # Usage:
-#   skaffold dev                     Dev mode: watch + port-forward
-#   skaffold run                     One-shot deploy
-#   skaffold build                   Build images only
+#   skaffold dev                     Watch mode: build + deploy + port-forward
+#   skaffold run                     One-shot local deploy
 #   skaffold delete                  Tear down
+#
+# For staging/production, use:
+#   skaffold run -f skaffold.prod.yaml
 # ============================================================
 apiVersion: skaffold/v4beta5
 kind: Config
@@ -26,7 +26,7 @@ build:
       context: .
       docker:
         dockerfile: apps/backend/Dockerfile
-        target: development
+        target: production
     - image: aigov-frontend
       context: .
       docker:

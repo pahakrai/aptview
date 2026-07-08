@@ -40,6 +40,17 @@ export class AuditsController {
   }
 
   /**
+   * Get the latest audit scores for a specific PR in a repository.
+   */
+  @Get('by-pr/:repoId/:prNumber')
+  async getByPr(
+    @Param('repoId') repoId: string,
+    @Param('prNumber') prNumber: string,
+  ) {
+    return this.auditsService.getByPr(repoId, +prNumber);
+  }
+
+  /**
    * Get the three percentage scores for a specific audit.
    */
   @Get(':id/scores')

@@ -23,7 +23,7 @@ export class RepositoriesController {
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() body: { isActive?: boolean; webhookSecret?: string }) {
+  update(@Param('id') id: string, @Body() body: { isActive?: boolean; webhookSecret?: string; reviewBranches?: string[] }) {
     return this.reposService.update(id, body);
   }
 }

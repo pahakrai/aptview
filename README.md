@@ -36,6 +36,7 @@ cp .env.example .env
 skaffold dev
 # → Builds images, deploys to K8s, port-forwards :3000 + :5173
 # → Watches for changes, auto-rebuilds
+# For staging/prod: skaffold run -f skaffold.prod.yaml
 
 # 4. Launch the desktop app (Terminal 2)
 yarn workspace aigov-desktop start
@@ -116,6 +117,7 @@ docs/              Setup, scoring, CI/CD, architecture
 | Doc | Covers |
 |---|---|
 | [docs/setup.md](docs/setup.md) | Complete setup from zero |
+| [docs/configuration.md](docs/configuration.md) | **All settings — desktop UI, GitHub, K8s** |
 | [docs/architecture.md](docs/architecture.md) | System design and endpoints |
 | [docs/cicd.md](docs/cicd.md) | Webhooks, GitHub Actions, Cloudflare |
 | [docs/scoring.md](docs/scoring.md) | How scores are computed |

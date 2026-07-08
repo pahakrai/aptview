@@ -42,6 +42,9 @@ data:
   # Decomposition mode: "inline" (placeholder, dev) or "sandbox" (AI, prod)
   DECOMP_MODE: "sandbox"
 
+  # Branch filtering — only review PRs targeting these branches (empty = all)
+  REVIEW_TARGET_BRANCHES: "dev,main"
+
   # CORS
   CORS_ORIGIN: "https://aigov.example.com"
 

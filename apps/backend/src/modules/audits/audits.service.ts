@@ -47,6 +47,39 @@ export class AuditsService {
   }
 
   /**
+   * Get the latest audit for a specific PR in a repository.
+   * Returns scores if available, or null if the audit hasn't completed yet.
+   */
+  async getByPr(repositoryId: string, prNumber: number) {
+    const [audit] = await db
+      .select()
+      .from(aiAudits)
+      .where(
+        and(
+          eq(aiAudits.repositoryId, repositoryId),
+          eq(aiAudits.prNumber, prNumber),
+        ),
+      )
+      .orderBy(desc(aiAudits.createdAt))
+      .limit(1);
+
+    if (!audit) {
+      return { prNumber, status: 'not_found', message: 'No audit found for this PR' };
+    }
+
+    return {
+      auditId: audit.id,
+      prNumber: audit.prNumber,
+      verdict: audit.verdict,
+      complianceScore: audit.complianceScore,
+      efficiencyScore: audit.efficiencyScore,
+      coverageScore: audit.coverageScore,
+      scopeCreepDetected: audit.scopeCreepDetected,
+      completedAt: audit.completedAt,
+    };
+  }
+
+  /**
    * Get the three percentage scores for a specific audit.
    */
   async getScores(id: string) {

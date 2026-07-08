@@ -53,12 +53,25 @@
     #main { flex:1; display:flex; overflow:hidden; }
 
     /* Config Panel */
-    #config-panel { width:240px; background:#0f172a; border-right:1px solid #1e293b; padding:16px; display:flex; flex-direction:column; gap:16px; overflow-y:auto; }
-    .config-section { display:flex; flex-direction:column; gap:6px; }
-    .config-label { font-size:11px; font-weight:600; color:#64748b; text-transform:uppercase; letter-spacing:0.05em; }
-    select, textarea { background:#1e293b; border:1px solid #334155; border-radius:6px; color:#e2e8f0; padding:8px; font-size:12px; font-family:inherit; width:100%; }
-    textarea { resize:vertical; min-height:80px; font-family:'Inter',sans-serif; }
-    select:focus, textarea:focus { outline:none; border-color:#16a34a; }
+    #config-panel { width:260px; background:#0f172a; border-right:1px solid #1e293b; padding:16px; display:flex; flex-direction:column; gap:14px; overflow-y:auto; }
+    .config-section { display:flex; flex-direction:column; gap:5px; }
+    .config-label { font-size:10px; font-weight:600; color:#64748b; text-transform:uppercase; letter-spacing:0.06em; }
+    .config-desc { font-size:10px; color:#475569; line-height:1.4; }
+    select, textarea, .config-input { background:#1e293b; border:1px solid #334155; border-radius:6px; color:#e2e8f0; padding:7px 10px; font-size:12px; font-family:inherit; width:100%; transition:border-color 0.15s; }
+    textarea { resize:vertical; min-height:70px; font-family:'Inter',sans-serif; font-size:11px; line-height:1.5; }
+    select:focus, textarea:focus, .config-input:focus { outline:none; border-color:#22c55e; }
+    /* Branch tags */
+    .branch-tags { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
+    .branch-tag { display:inline-flex; align-items:center; gap:4px; padding:2px 8px; background:#1e293b; border:1px solid #334155; border-radius:4px; font-size:11px; font-family:monospace; color:#e2e8f0; }
+    .branch-tag .remove-tag { cursor:pointer; color:#64748b; font-size:14px; line-height:1; margin-left:2px; }
+    .branch-tag .remove-tag:hover { color:#ef4444; }
+    .branch-tag.dev { border-color:#22c55e40; color:#4ade80; }
+    .branch-tag.main { border-color:#f59e0b40; color:#fbbf24; }
+    .branch-add { display:flex; gap:4px; margin-top:4px; }
+    .branch-add input { flex:1; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; padding:4px 8px; font-size:11px; font-family:monospace; }
+    .branch-add input:focus { outline:none; border-color:#22c55e; }
+    .branch-add button { padding:4px 10px; border-radius:4px; border:1px solid #22c55e40; background:#22c55e15; color:#4ade80; font-size:11px; cursor:pointer; }
+    .branch-add button:hover { background:#22c55e25; }
 
     /* Monitor */
     #monitor { flex:1; display:flex; overflow:hidden; }
@@ -80,6 +93,22 @@
     #decision-gate { display:flex; align-items:center; gap:12px; padding:12px 16px; background:#0f172a; border-top:1px solid #1e293b; }
     .decision-status { flex:1; font-size:13px; color:#f59e0b; display:flex; align-items:center; gap:8px; }
     .decision-status .status-dot { width:6px; height:6px; }
+
+    /* Settings Overlay */
+    #settings-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.75); z-index:200; align-items:center; justify-content:center; }
+    #settings-overlay.open { display:flex; }
+    .settings-panel { background:#0f172a; border:1px solid #1e293b; border-radius:12px; width:620px; max-width:95vw; max-height:82vh; display:flex; flex-direction:column; box-shadow:0 24px 80px rgba(0,0,0,0.6); animation:slideIn 0.15s ease; }
+    @keyframes slideIn { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:translateY(0); } }
+    .settings-header { display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid #1e293b; }
+    .settings-header h2 { font-size:15px; font-weight:600; color:#e2e8f0; margin:0; }
+    .settings-body { padding:20px; overflow-y:auto; display:flex; flex-direction:column; gap:16px; }
+    .repo-setting-card { padding:12px; border:1px solid #1e293b; border-radius:8px; }
+    .repo-setting-header { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+    .repo-setting-name { font-size:13px; font-weight:600; color:#e2e8f0; }
+    .repo-setting-fullname { font-size:10px; color:#475569; font-family:monospace; }
+    .settings-divider { border:none; border-top:1px solid #1e293b; margin:0; }
+    .btn-icon { padding:5px 8px; border-radius:6px; border:1px solid #334155; background:transparent; color:#94a3b8; font-size:14px; cursor:pointer; transition:all 0.15s; }
+    .btn-icon:hover { background:#1e293b; color:#e2e8f0; border-color:#475569; }
   </style>
 </head>
 <body>
@@ -90,6 +119,7 @@
     <span style="flex:1"></span>
     <span class="review-count" id="review-count"></span>
     <button class="btn btn-primary" id="btn-retry" onclick="retryConnection()" style="display:none">Retry Connection</button>
+    <button class="btn-icon" onclick="toggleSettings()" title="Settings">&#9881;</button>
   </div>
 
   <!-- Activity Board -->
@@ -129,7 +159,20 @@
         </select>
       </div>
       <div class="config-section">
+        <label class="config-label">Target Branches</label>
+        <p class="config-desc">Only review PRs targeting these branches. Empty = all branches.</p>
+        <div class="branch-tags" id="branch-tags">
+          <span class="branch-tag dev">dev <span class="remove-tag" onclick="removeBranch('dev')">&times;</span></span>
+          <span class="branch-tag main">main <span class="remove-tag" onclick="removeBranch('main')">&times;</span></span>
+        </div>
+        <div class="branch-add">
+          <input type="text" id="branch-input" placeholder="Add branch..." onkeydown="if(event.key==='Enter')addBranch()">
+          <button onclick="addBranch()">+ Add</button>
+        </div>
+      </div>
+      <div class="config-section">
         <label class="config-label">System Persona</label>
+        <p class="config-desc">Customize how the AI reviews code.</p>
         <textarea id="config-persona" placeholder="Focus on security and performance...">Focus on code quality, security, performance, and adherence to best practices. Flag any issues with error handling, input validation, or potential bugs.</textarea>
       </div>
     </div>
@@ -174,6 +217,35 @@
     <button class="btn btn-primary" id="btn-approve" disabled onclick="approveReview()">Approve &amp; Comment</button>
     <button class="btn btn-danger" id="btn-cancel" disabled onclick="cancelReview()">Cancel Review</button>
     <button class="btn" id="btn-trigger" disabled onclick="triggerReview()">Manually Trigger Review</button>
+  </div>
+
+  <!-- Settings Overlay -->
+  <div id="settings-overlay">
+    <div class="settings-panel">
+      <div class="settings-header">
+        <h2>Settings</h2>
+        <button class="btn btn-outline btn-sm" onclick="toggleSettings()">Close</button>
+      </div>
+      <div class="settings-body">
+        <div class="config-section">
+          <label class="config-label">Repositories</label>
+          <p class="config-desc">Configure which target branches trigger a review for each repository. Empty = review all branches.</p>
+          <div id="repo-list"><p style="color:#475569;font-size:12px;padding:8px 0;">Loading repositories...</p></div>
+        </div>
+        <hr class="settings-divider">
+        <div class="config-section">
+          <label class="config-label">Global Preferences</label>
+          <p class="config-desc">Model, persona, and review mode. These apply to all reviews.</p>
+          <div style="margin-top:8px;display:flex;flex-direction:column;gap:8px;">
+            <select id="settings-model" style="width:auto;">
+              <option value="deepseek">DeepSeek</option>
+              <option value="claude">Claude</option>
+            </select>
+            <textarea id="settings-persona" rows="2" style="min-height:50px;font-size:11px;">Focus on code quality, security, performance, and adherence to best practices.</textarea>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="https://cdn.socket.io/4.7.0/socket.io.min.js"></script>

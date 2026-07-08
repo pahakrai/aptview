@@ -245,16 +245,12 @@ function selectReview(threadId) {
 
 async function fetchScores(owner, repo, prNumber) {
   try {
-    // Fetch audits for the repo, filter for this PR
-    const demoRepoId = '00000000-0000-0000-0000-000000000000'; // TODO: map from repo
-    const res = await fetch(`${API_BASE}/audits/repo/${demoRepoId}?pageSize=50`);
-    const data = await res.json();
-    const audits = data.data || [];
+    // Query audits by repo ID + PR number directly
+    const repoId = '00000000-0000-0000-0000-000000000000'; // Matches webhook default
+    const res = await fetch(`${API_BASE}/audits/by-pr/${repoId}/${prNumber}`);
+    const audit = await res.json();
 
-    // Find the matching audit
-    const audit = audits.find((a) => a.prNumber === prNumber);
-
-    if (audit) {
+    if (audit && audit.verdict) {
       updateScore('score-compliance', 'score-bar-c', audit.complianceScore, '#22c55e');
       updateScore('score-efficiency', 'score-bar-e', audit.efficiencyScore, '#3b82f6');
       updateScore('score-coverage', 'score-bar-v', audit.coverageScore, '#8b5cf6');
@@ -363,6 +359,134 @@ function updateGate(status) {
       break;
   }
 }
+
+// ===========================================================================
+// Branch management (quick panel)
+// ===========================================================================
+
+let reviewBranches = ['dev', 'main'];
+
+function addBranch() {
+  const input = document.getElementById('branch-input');
+  const name = input.value.trim();
+  if (!name || reviewBranches.includes(name)) { input.value = ''; return; }
+  reviewBranches.push(name);
+  renderBranches();
+  input.value = '';
+  input.focus();
+}
+
+function removeBranch(name) {
+  reviewBranches = reviewBranches.filter((b) => b !== name);
+  renderBranches();
+}
+
+function renderBranches() {
+  const container = document.getElementById('branch-tags');
+  container.innerHTML = reviewBranches.map((b) => {
+    const cls = (b === 'dev' || b === 'main') ? b : '';
+    return `<span class="branch-tag ${cls}">${b} <span class="remove-tag" onclick="removeBranch('${b}')">&times;</span></span>`;
+  }).join('');
+}
+
+// ===========================================================================
+// Settings overlay
+// ===========================================================================
+
+let settingsOpen = false;
+const orgId = '00000000-0000-0000-0000-000000000000';
+
+async function toggleSettings() {
+  settingsOpen = !settingsOpen;
+  const overlay = document.getElementById('settings-overlay');
+  if (settingsOpen) {
+    overlay.classList.add('open');
+    loadRepositories();
+  } else {
+    overlay.classList.remove('open');
+  }
+  // Sync global prefs
+  const modelEl = document.getElementById('config-model');
+  const personaEl = document.getElementById('config-persona');
+  const settingsModel = document.getElementById('settings-model');
+  const settingsPersona = document.getElementById('settings-persona');
+  if (settingsModel && modelEl) settingsModel.value = modelEl.value;
+  if (settingsPersona && personaEl) settingsPersona.value = personaEl.value;
+}
+
+async function loadRepositories() {
+  const container = document.getElementById('repo-list');
+  try {
+    const res = await fetch(`${API_BASE}/repositories/org/${orgId}`);
+    const data = await res.json();
+    const repos = Array.isArray(data) ? data : (data.data || []);
+    if (repos.length === 0) {
+      container.innerHTML = '<p style="color:#64748b;font-size:12px;padding:8px 0;">No repositories linked yet.</p>';
+      return;
+    }
+    container.innerHTML = repos.map((r) => `
+      <div class="repo-setting-card">
+        <div class="repo-setting-header">
+          <span class="repo-setting-name">${r.name}</span>
+          <span class="repo-setting-fullname">${r.fullName}</span>
+        </div>
+        <div class="branch-tags" id="branches-${r.id}">
+          ${(r.reviewBranches || ['dev']).map((b) =>
+            `<span class="branch-tag ${b}">${b} <span class="remove-tag" onclick="removeRepoBranch('${r.id}','${b}')">&times;</span></span>`
+          ).join('')}
+        </div>
+        <div class="branch-add">
+          <input type="text" placeholder="Add branch..." id="input-${r.id}"
+            onkeydown="if(event.key==='Enter')addRepoBranch('${r.id}')">
+          <button onclick="addRepoBranch('${r.id}')">+ Add</button>
+        </div>
+      </div>
+    `).join('');
+  } catch {
+    container.innerHTML = '<p style="color:#64748b;font-size:12px;padding:8px 0;">Unable to load repositories.</p>';
+  }
+}
+
+async function addRepoBranch(repoId) {
+  const input = document.getElementById('input-' + repoId);
+  const name = input.value.trim();
+  if (!name) return;
+  input.value = '';
+  // Get current branches, add new one, save
+  const container = document.getElementById('branches-' + repoId);
+  const existing = Array.from(container.querySelectorAll('.branch-tag'))
+    .map((t) => t.textContent.replace('×', '').trim());
+  if (existing.includes(name)) return;
+  existing.push(name);
+  await persistRepoBranches(repoId, existing);
+  loadRepositories();
+}
+
+async function removeRepoBranch(repoId, name) {
+  const container = document.getElementById('branches-' + repoId);
+  const existing = Array.from(container.querySelectorAll('.branch-tag'))
+    .map((t) => t.textContent.replace('×', '').trim())
+    .filter((b) => b !== name);
+  await persistRepoBranches(repoId, existing);
+  loadRepositories();
+}
+
+async function persistRepoBranches(repoId, branches) {
+  try {
+    await fetch(`${API_BASE}/repositories/${repoId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reviewBranches: branches }),
+    });
+  } catch (err) {
+    console.error('Failed to save branch config:', err);
+  }
+}
+
+// Close settings overlay on Escape
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && settingsOpen) toggleSettings();
+});
 
 // Close review list when clicking outside
 document.addEventListener('click', (e) => {

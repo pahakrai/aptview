@@ -32,6 +32,8 @@ export class ReviewsController implements OnGatewayConnection {
 
   handleConnection(client: Socket) {
     console.log(`[WS] Client connected: ${client.id}`);
+    // Share the WebSocket server with ReviewsService so the processor can emit events
+    this.reviewsService.setServer(this.server);
   }
 
   // ===========================================================================

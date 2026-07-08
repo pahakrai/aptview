@@ -44,7 +44,7 @@ export class RepositoriesService {
     return repo;
   }
 
-  async update(id: string, data: { isActive?: boolean; webhookSecret?: string }) {
+  async update(id: string, data: { isActive?: boolean; webhookSecret?: string; reviewBranches?: string[] }) {
     await this.getById(id); // throws if not found
 
     const [updated] = await db

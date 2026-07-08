@@ -20,6 +20,9 @@ import { GitHubPREvent, JiraIssueEvent, LinearIssueEvent } from '@aigov/shared-t
 import { GitHubService } from './github.service';
 import { AuditsService } from '../audits/audits.service';
 import { ReviewsService } from '../reviews/reviews.service';
+import { db } from '../../database/client';
+import { repositories } from '../../database/schema';
+import { eq } from 'drizzle-orm';
 
 /**
  * WebhooksService — Routes incoming webhook events.
@@ -128,7 +131,29 @@ export class WebhooksService {
     );
 
     // -----------------------------------------------------------------------
-    // 3. List changed files and build diff
+    // 3. Check if this target branch should be reviewed
+    // -----------------------------------------------------------------------
+    const repoRecord = await db
+      .select({ reviewBranches: repositories.reviewBranches })
+      .from(repositories)
+      .where(eq(repositories.fullName, fullName))
+      .limit(1);
+
+    const allowedBranches: string[] = repoRecord[0]?.reviewBranches || ['dev'];
+
+    // Empty array = review all branches
+    if (allowedBranches.length > 0 && !allowedBranches.includes(targetBranch)) {
+      this.logger.log(
+        `Skipping PR #${prNumber}: target "${targetBranch}" not in [${allowedBranches.join(', ')}]`,
+      );
+      return {
+        status: 'skipped',
+        reason: `Branch "${targetBranch}" not in review list: ${allowedBranches.join(', ')}`,
+      };
+    }
+
+    // -----------------------------------------------------------------------
+    // 4. List changed files and build diff
     // -----------------------------------------------------------------------
     const prFiles = await this.githubService.listPRFiles(fullName, prNumber);
     const diffParts: string[] = [];

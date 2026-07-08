@@ -72,6 +72,7 @@ export interface Repository {
   fullName: string;
   provider: 'github' | 'gitlab' | 'bitbucket';
   webhookSecret: string;
+  reviewBranches: string[];
   isActive: boolean;
   createdAt: string;
   updatedAt: string;

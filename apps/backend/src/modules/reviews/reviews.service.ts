@@ -30,10 +30,16 @@ export interface PendingReview {
 @Injectable()
 export class ReviewsService {
   private readonly reviews = new Map<string, PendingReview>();
+  private webSocketServer: { emit: (event: string, data: unknown) => void } | null = null;
 
   constructor(
     @InjectQueue('reviews') private readonly reviewQueue: Queue,
   ) {}
+
+  /** Set the WebSocket server reference (called by controller on init) */
+  setServer(server: { emit: (event: string, data: unknown) => void }) {
+    this.webSocketServer = server;
+  }
 
   /**
    * Enqueue a review analysis job. Returns immediately — the review runs async.
@@ -50,8 +56,7 @@ export class ReviewsService {
   }
 
   /**
-   * Save a pending review in memory (for demo/desktop use).
-   * In production, persist to PostgreSQL or Redis.
+   * Save a pending review and notify connected WebSocket clients.
    */
   async savePendingReview(threadId: string, review: Omit<PendingReview, 'threadId' | 'createdAt'>): Promise<void> {
     this.reviews.set(threadId, {
@@ -59,6 +64,22 @@ export class ReviewsService {
       threadId,
       createdAt: new Date().toISOString(),
     });
+
+    // Notify connected desktop app clients via WebSocket
+    if (this.webSocketServer) {
+      this.webSocketServer.emit('review:complete', {
+        threadId,
+        prNumber: review.prNumber,
+        prTitle: review.prTitle,
+        owner: review.owner,
+        repo: review.repo,
+        sourceBranch: review.sourceBranch,
+        targetBranch: review.targetBranch,
+        author: review.author,
+        reviewText: review.reviewText,
+        status: review.status,
+      });
+    }
   }
 
   /**

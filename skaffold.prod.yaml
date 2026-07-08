@@ -1,0 +1,53 @@
+# ============================================================
+# Skaffold configuration — AIGov (Staging / Production)
+#
+# Usage:
+#   skaffold run   -f skaffold.prod.yaml    One-shot deploy
+#   skaffold build -f skaffold.prod.yaml    Build + push images
+#   skaffold delete -f skaffold.prod.yaml   Tear down
+#
+# Prerequisites:
+#   - kubectl configured for your production cluster
+#   - Container registry access (Docker Hub, GHCR, ECR, etc.)
+#   - All secrets populated in k8s/secrets.yaml
+# ============================================================
+apiVersion: skaffold/v4beta5
+kind: Config
+metadata:
+  name: aigov-prod
+
+build:
+  tagPolicy:
+    gitCommit: {}   # Tags images with git commit SHA
+  artifacts:
+    - image: ghcr.io/your-org/aigov-backend
+      context: .
+      docker:
+        dockerfile: apps/backend/Dockerfile
+        target: production
+    - image: ghcr.io/your-org/aigov-frontend
+      context: .
+      docker:
+        dockerfile: apps/frontend/Dockerfile
+        target: production
+  local:
+    useBuildkit: true
+    push: true       # Push to registry
+
+manifests:
+  rawYaml:
+    - k8s/namespaces.yaml
+    - k8s/configmap.yaml
+    - k8s/secrets.yaml
+    - k8s/postgres.yaml
+    - k8s/redis.yaml
+    - k8s/rbac.yaml
+    - k8s/network-policy.yaml
+    - k8s/backend.yaml
+    - k8s/frontend.yaml
+
+deploy:
+  kubectl: {}
+  statusCheckDeadlineSeconds: 600
+
+# No port-forward in production — use Ingress/Cloudflare instead
