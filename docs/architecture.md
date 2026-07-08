@@ -73,10 +73,14 @@ GitHub PR webhook
 │                      ▼ (human clicks Approve)                         │
 │                  postToGitHub → Octokit → PR comment                  │
 │                                                                       │
-│  Checkpoints: Redis (MemorySaver)                                    │
-│  Streaming:   Redis Pub/Sub → WebSocket → Electron                   │
+│  Checkpoints: In-memory (MemorySaver)                                │
+│  Streaming:   WebSocket (Socket.IO) → Electron                       │
 └───────────────────────────────────────────────────────────────────────┘
 ```
+
+See [reviews.md](reviews.md) for a detailed explanation of the LangGraph
+orchestration, the DeepSeek tool loop, the BullMQ two-job split, and the
+WebSocket + polling dual channel.
 
 ## Key Design Decisions
 
@@ -88,9 +92,9 @@ GitHub PR webhook
 
 4. **Graduated enforcement**: `advisory → scope_only → full`. Teams adopt without velocity shock, then progressively tighten governance.
 
-5. **Ephemeral Docker sandbox placeholder**: The audit processor currently runs inline. In production, this should use ephemeral Docker containers with gVisor/Firecracker for security isolation.
+5. **Three analysis modes**: `inline` (regex), `sdk` (Claude Agent SDK), `sandbox` (K8s CodeWhale). Desktop defaults to `sdk` for fast local analysis. Production can switch to `sandbox` for container isolation.
 
-## Database Schema (9 tables)
+## Database Schema (10 tables)
 
 - `organizations` — tenants with enforcement mode
 - `repositories` — linked repos with webhook secrets
@@ -100,6 +104,7 @@ GitHub PR webhook
 - `scope_violations` — detected scope creep events
 - `decomposed_tasks` — AI-generated task breakouts with file boundaries
 - `decomposition_feedback` — developer quality ratings
+- `sub_tasks` — quantifiable sub-task breakdowns with acceptance criteria
 - `enforcement_events` — audit log of mode changes
 
 ## API Endpoints

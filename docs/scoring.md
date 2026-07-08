@@ -27,9 +27,9 @@ how to interpret it.
 
 | Score | Range | Meaning | Available in |
 |---|---|---|---|
-| `complianceScore` | 0–100 | How many coding standards did the code pass? | Inline + Sandbox |
-| `efficiencyScore` | 0–100 | Is the code appropriately sized for the task? | Inline + Sandbox |
-| `coverageScore` | 0–100 | Does the code cover all task requirements? | Sandbox only |
+| `complianceScore` | 0–100 | How many coding standards did the code pass? | All modes |
+| `efficiencyScore` | 0–100 | Is the code appropriately sized for the task? | All modes |
+| `coverageScore` | 0–100 | Does the code cover all task requirements? | SDK + Sandbox (AI-only) |
 
 ---
 
