@@ -1,8 +1,9 @@
 # ============================================================================
-# rbac.yaml — Kubernetes RBAC for aigov CodeWhale sandbox runner
+# rbac.yaml — Kubernetes RBAC for aigov CodeWhale sandbox runner + MCP servers
 # ============================================================================
-# Grants the backend service permission to create, get, list, watch, and
-# delete Job and Pod resources in the codewhale-runner namespace.
+# Grants the backend service permission to:
+#   - Create, get, list, watch, delete Job and Pod resources in codewhale-runner
+#   - Get pod logs in the aigov namespace (for MCP Kubernetes server)
 #
 # Apply:
 #   kubectl apply -f k8s/rbac.yaml
@@ -14,6 +15,43 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: codewhale-runner
+
+---
+# ============================================================================
+# AIGOV NAMESPACE RBAC — grants backend SA pod/log access for MCP K8s server
+# ============================================================================
+
+---
+# Role: allows backend SA to read pod logs in the aigov namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: backend-pod-reader
+  namespace: aigov
+  labels:
+    app.kubernetes.io/part-of: aigov
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list"]
+
+---
+# RoleBinding: binds backend SA to pod-reader role in aigov namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: backend-pod-reader-binding
+  namespace: aigov
+  labels:
+    app.kubernetes.io/part-of: aigov
+subjects:
+  - kind: ServiceAccount
+    name: backend-sa
+    namespace: aigov
+roleRef:
+  kind: Role
+  name: backend-pod-reader
+  apiGroup: rbac.authorization.k8s.io
 
 ---
 # ServiceAccount for the backend to assume
@@ -45,6 +83,12 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["get", "list", "watch"]
+
+  # Pod logs: required by MCP Kubernetes server for log access
+  # Only needed when LOG_ANALYZER_MCP_K8S=true
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
 
 ---
 # RoleBinding: binds the ServiceAccount to the Role

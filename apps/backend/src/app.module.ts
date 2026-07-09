@@ -11,6 +11,7 @@ import { DecompositionModule } from './modules/decomposition/decomposition.modul
 import { StandardsModule } from './modules/standards/standards.module';
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { ReviewsModule } from './modules/reviews/reviews.module';
+import { LogAnalyzerModule } from './modules/log-analyzer/log-analyzer.module';
 import { HealthController } from './modules/health.controller';
 
 @Module({
@@ -43,6 +44,7 @@ import { HealthController } from './modules/health.controller';
     StandardsModule,
     WebhooksModule,
     ReviewsModule,
+    LogAnalyzerModule,
   ],
   controllers: [HealthController],
 })

@@ -49,6 +49,7 @@ manifests:
     - k8s/redis.yaml
     - k8s/rbac.yaml
     - k8s/network-policy.yaml
+    - k8s/mcp-config.yaml
     - k8s/backend.yaml
     - k8s/frontend.yaml
 

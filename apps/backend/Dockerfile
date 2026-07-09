@@ -20,6 +20,17 @@ RUN yarn workspace backend build
 FROM node:20-alpine AS production
 WORKDIR /app
 
+# ---------------------------------------------------------------------------
+# MCP Server Dependencies
+# ---------------------------------------------------------------------------
+# kubectl: required by @flux159/mcp-server-kubernetes for K8s log access
+# MCP server packages are installed globally so npx finds them without download
+RUN apk add --no-cache kubectl curl && \
+    npm install -g \
+      @flux159/mcp-server-kubernetes \
+      @awslabs/amazon-cloudwatch-logs-mcp \
+      @swen128/cloud-logging-mcp
+
 COPY --from=builder /app/dist/apps/backend ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/apps/backend/package.json ./

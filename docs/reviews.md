@@ -358,3 +358,189 @@ The `review:token` WebSocket event is wired up in the desktop but nothing
 emits it. DeepSeek's API supports SSE streaming — piping `delta.content`
 chunks through the WebSocket would give the reviewer incremental visibility
 instead of a 30-second blank screen during analysis.
+
+---
+
+## Log Analyzer Pipeline
+
+The log analyzer is a separate pipeline for AI-powered log debugging.
+Unlike the review pipeline, it has no HITL gate — logs enter, analysis exits.
+
+### Architecture
+
+```
+Desktop App (🔍 Log Checker button)
+  │  text paste or file upload
+  ▼
+POST /api/v1/log-analyzer/analyze
+  │
+  ▼
+BullMQ 'log-analyzer' queue
+  │
+  ▼
+LogAnalyzerProcessor
+  │  1. Builds UnifiedToolbox
+  │  2. Injects DEEPSEEK_API_KEY + toolbox
+  │  3. graph.invoke()
+  ▼
+LangGraph (single node: analyzeLogs)
+  │
+  ├─ DeepSeek API call with all tools
+  │   ├─ tool_calls? → dispatch to toolbox router → loop back
+  │   └─ content?    → save analysisText → END
+  │
+  ▼
+LogAnalyzerService.saveAnalysis()
+  │  emits 'log-analyzer:complete' via WebSocket
+  ▼
+Desktop renders structured markdown report
+```
+
+### The Three-Layer Toolbox
+
+The log analyzer merges tools from three layers into a single DeepSeek-compatible
+tool list. Each layer adds progressively more context:
+
+```
+┌──────────────────────────────────────────────┐
+│ Layer 3: MCP tools       (optional, external) │
+│  k8s_list_pods, aws_filter_log_events,        │
+│  gcp_list_log_entries, ...                    │
+│  → Connected via MCP bridge (stdio transport) │
+├──────────────────────────────────────────────┤
+│ Layer 2: Local skills    (business context)   │
+│  prioritize_by_sla, correlate_cross_cloud_, │
+│  route_diagnostic_to_owner                     │
+│  → In-process TypeScript functions            │
+├──────────────────────────────────────────────┤
+│ Layer 1: Core tools      (log parsing)        │
+│  ParseLogFormat, ExtractErrors,               │
+│  SearchLogs, CountByLevel                     │
+│  → Regex/heuristic, in-process                │
+└──────────────────────────────────────────────┘
+```
+
+### Core Tools (Layer 1)
+
+| Tool | What it does |
+|---|---|
+| `ParseLogFormat` | Detects JSON/syslog/plain text format, timestamps, log levels, sample entries |
+| `ExtractErrors` | Returns all ERROR/FATAL/CRITICAL lines with configurable context lines |
+| `SearchLogs` | Regex search across log content with case-insensitive option |
+| `CountByLevel` | Counts entries by severity (ERROR/WARN/INFO/DEBUG/TRACE/FATAL) |
+
+### Local Business Skills (Layer 2)
+
+These give DeepSeek domain-specific business context:
+
+| Skill | What it does |
+|---|---|
+| `prioritize_by_sla` | Cross-references a failing service against the org's SLA map and returns a priority rating (P1-CRITICAL through P4-LOW) with response SLA windows |
+| `correlate_cross_cloud_trace` | Searches for a distributed trace ID across available log sources to build a chronological failure timeline |
+| `route_diagnostic_to_owner` | Maps a failing service to the responsible team, Slack channel, repository link, and PagerDuty service |
+
+**Configuration:** SLA maps and team routing tables are defined in
+`local-skills.ts` with sensible defaults. Override by setting:
+- `SLA_OVERRIDE_{SERVICE}=P1-CRITICAL:15m` environment variables
+- `TEAM_ROUTING_CONFIG_PATH` to a custom JSON file
+
+### MCP Bridge (Layer 3)
+
+The MCP bridge connects to external MCP servers via stdio transport for
+cloud-native log access. Configured via `LOG_ANALYZER_MCP_CONFIG`:
+
+```json
+{
+  "k8s": { "command": "npx", "args": ["-y", "@flux159/mcp-server-kubernetes"] },
+  "aws": { "command": "npx", "args": ["-y", "@awslabs/amazon-cloudwatch-logs-mcp"],
+           "env": { "AWS_REGION": "us-east-1" } },
+  "gcp": { "command": "npx", "args": ["-y", "@swen128/cloud-logging-mcp"],
+           "env": { "GOOGLE_APPLICATION_CREDENTIALS": "./gcp-key.json" } }
+}
+```
+
+When configured, these MCP servers provide tools like `k8s_get_pod_logs`,
+`aws_filter_log_events`, and `gcp_list_log_entries` directly to DeepSeek.
+
+**Current state:** The `McpBridge` class provides the full interface and
+stub implementations. The `@modelcontextprotocol/sdk` dependency is declared
+in `package.json`. To activate real MCP connections, uncomment the SDK
+imports and replace the `connectToServer` stub with actual `Client` and
+`StdioClientTransport` calls.
+
+### Tool Router
+
+The `UnifiedToolbox` (in `toolbox.ts`) provides a single `executeTool` function
+that dispatches tool calls to the correct layer:
+
+```
+DeepSeek calls "ExtractErrors"
+  → toolbox.executeTool("ExtractErrors", args, logContent)
+    → toolLayers.get("ExtractErrors") === "core"
+      → toolExtractErrors(logContent, args.contextLines)
+
+DeepSeek calls "prioritize_by_sla"
+  → toolbox.executeTool("prioritize_by_sla", args, logContent)
+    → toolLayers.get("prioritize_by_sla") === "local-skill"
+      → executeLocalSkill("prioritize_by_sla", args)
+
+DeepSeek calls "k8s_get_pod_logs"
+  → toolbox.executeTool("k8s_get_pod_logs", args, logContent)
+    → toolLayers.get("k8s_get_pod_logs") === "mcp"
+      → mcpBridge.callTool("k8s_get_pod_logs", args)
+```
+
+The graph itself is layer-agnostic — it only calls `toolbox.executeTool()`.
+Adding a new tool layer requires zero changes to the graph or the DeepSeek
+integration.
+
+### Analysis Protocol (DeepSeek system prompt)
+
+DeepSeek is instructed to follow a structured analysis protocol:
+
+1. `ParseLogFormat` — understand the log structure
+2. `CountByLevel` — see severity distribution
+3. `ExtractErrors` — get error details with context
+4. `SearchLogs` — find patterns, trace IDs, exception names
+5. `prioritize_by_sla` — assess business impact of each error
+6. `correlate_cross_cloud_trace` — stitch distributed traces
+7. `route_diagnostic_to_owner` — map to team + Slack + repo
+
+The loop depth is determined by DeepSeek — it calls tools until it has enough
+context, capped at 15 iterations. The harness provides the rails; the model
+decides the depth.
+
+### End-to-End Flow
+
+```
+1. User opens Log Checker overlay (🔍 button in status bar)
+2. Pastes logs or uploads a file (.log, .txt, .json, .csv)
+3. Clicks "Analyze with DeepSeek"
+4. POST /api/v1/log-analyzer/analyze → enqueues BullMQ job
+5. Processor builds UnifiedToolbox, injects into LangGraph
+6. graph.invoke() → DeepSeek drives tool loop (1-15 turns)
+7. Each tool call dispatches to correct layer:
+   - Core tools execute in-process
+   - Local skills execute in-process with business logic
+   - MCP tools (if connected) forward to external MCP servers
+8. Final analysis saved → 'log-analyzer:complete' WebSocket event
+9. Desktop renders structured markdown in output panel
+```
+
+### Files
+
+```
+apps/backend/src/modules/log-analyzer/
+├── log-analyzer.module.ts       NestJS module
+├── log-analyzer.controller.ts   REST + WebSocket (/log-analyzer namespace)
+├── log-analyzer.service.ts      Session store + WebSocket broadcast
+├── log-analyzer.processor.ts    BullMQ worker + MCP bridge init
+├── log-analyzer.graph.ts        LangGraph (single-node, tool loop)
+├── local-skills.ts              Business logic skills (SLA, trace, routing)
+├── mcp-bridge.ts                MCP client manager (pluggable cloud sources)
+└── toolbox.ts                   Unified tool builder + execution router
+
+apps/desktop/src/
+├── log-checker.js               UI logic (overlay, file upload, WS, rendering)
+└── App.html                     Log checker overlay HTML + CSS
+```

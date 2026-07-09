@@ -96,6 +96,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: aigov-config
+            - configMapRef:
+                name: aigov-mcp-config
           env:
             # Secrets
             - name: JWT_SECRET
@@ -123,6 +125,24 @@ spec:
                 secretKeyRef:
                   name: aigov-secrets
                   key: ANTHROPIC_API_KEY
+            # -------------------------------------------------------------------
+            # MCP Server Configuration (auto-generated from feature flags)
+            # The LOG_ANALYZER_MCP_CONFIG JSON is built by the processor from
+            # the aigov-mcp-config ConfigMap feature flags. No secret needed.
+            # -------------------------------------------------------------------
+            # AWS credentials (for CloudWatch MCP server)
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: aigov-secrets
+                  key: AWS_ACCESS_KEY_ID
+                  optional: true
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aigov-secrets
+                  key: AWS_SECRET_ACCESS_KEY
+                  optional: true
           resources:
             requests:
               cpu: 250m
@@ -144,6 +164,167 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 3
+          # -------------------------------------------------------------------
+          # MCP Credential Volume Mounts (optional)
+          # -------------------------------------------------------------------
+          volumeMounts:
+            - name: kubeconfig
+              mountPath: /secrets/kubeconfig
+              readOnly: true
+            - name: aws-credentials
+              mountPath: /secrets/aws
+              readOnly: true
+            - name: gcp-credentials
+              mountPath: /secrets/gcp
+              readOnly: true
+      # ===================================================================
+      # MCP Server Sidecar Containers
+      # ===================================================================
+      # Each MCP server runs as a sidecar container in the same pod,
+      # exposing an HTTP/SSE endpoint on localhost. The backend's McpBridge
+      # connects via http://localhost:<port>/sse.
+      #
+      # These sidecars use the same aigov-backend image (MCP packages are
+      # pre-installed in the Dockerfile). They start regardless of feature
+      # flags — the backend only connects when flags are "true".
+      #
+      # Kubernetes MCP Server
+      #   Port: 8081  |  SSE endpoint: http://localhost:8081/sse
+      - name: mcp-k8s
+        image: aigov-backend:latest
+        imagePullPolicy: IfNotPresent
+        command: ["npx"]
+        args: ["-y", "@flux159/mcp-server-kubernetes", "--transport", "sse", "--port", "8081"]
+        ports:
+          - containerPort: 8081
+            name: mcp-k8s
+        volumeMounts:
+          - name: kubeconfig
+            mountPath: /secrets/kubeconfig
+            readOnly: true
+        env:
+          - name: KUBECONFIG
+            value: /secrets/kubeconfig/config
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        readinessProbe:
+          httpGet:
+            path: /sse
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+
+      # AWS CloudWatch MCP Server
+      #   Port: 8082  |  SSE endpoint: http://localhost:8082/sse
+      - name: mcp-aws
+        image: aigov-backend:latest
+        imagePullPolicy: IfNotPresent
+        command: ["npx"]
+        args: ["-y", "@awslabs/amazon-cloudwatch-logs-mcp", "--transport", "sse", "--port", "8082"]
+        ports:
+          - containerPort: 8082
+            name: mcp-aws
+        volumeMounts:
+          - name: aws-credentials
+            mountPath: /secrets/aws
+            readOnly: true
+        env:
+          - name: AWS_REGION
+            valueFrom:
+              configMapKeyRef:
+                name: aigov-mcp-config
+                key: AWS_REGION
+                optional: true
+          - name: AWS_SHARED_CREDENTIALS_FILE
+            value: /secrets/aws/credentials
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        readinessProbe:
+          httpGet:
+            path: /sse
+            port: 8082
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+
+      # GCP Cloud Logging MCP Server
+      #   Port: 8083  |  SSE endpoint: http://localhost:8083/sse
+      - name: mcp-gcp
+        image: aigov-backend:latest
+        imagePullPolicy: IfNotPresent
+        command: ["npx"]
+        args: ["-y", "@swen128/cloud-logging-mcp", "--transport", "sse", "--port", "8083"]
+        ports:
+          - containerPort: 8083
+            name: mcp-gcp
+        volumeMounts:
+          - name: gcp-credentials
+            mountPath: /secrets/gcp
+            readOnly: true
+        env:
+          - name: GOOGLE_APPLICATION_CREDENTIALS
+            value: /secrets/gcp/gcp-key.json
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        readinessProbe:
+          httpGet:
+            path: /sse
+            port: 8083
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+      # -------------------------------------------------------------------
+      # MCP Server Credential Volumes
+      # -------------------------------------------------------------------
+      # These volumes are optional. Only needed when the corresponding
+      # LOG_ANALYZER_MCP_* feature flags are set to "true".
+      #
+      # Kubeconfig: mount your local ~/.kube/config for K8s MCP server access.
+      #   kubectl create secret generic kubeconfig --from-file=config=$HOME/.kube/config -n aigov
+      #
+      # AWS credentials: mount ~/.aws/credentials for CloudWatch MCP server access.
+      #   kubectl create secret generic aws-credentials --from-file=credentials=$HOME/.aws/credentials -n aigov
+      #
+      # GCP credentials: mount your GCP service account key.
+      #   kubectl create secret generic gcp-credentials --from-file=gcp-key.json=./gcp-key.json -n aigov
+      volumes:
+        - name: kubeconfig
+          secret:
+            secretName: kubeconfig
+            optional: true
+            items:
+              - key: config
+                path: config
+        - name: aws-credentials
+          secret:
+            secretName: aws-credentials
+            optional: true
+            items:
+              - key: credentials
+                path: credentials
+        - name: gcp-credentials
+          secret:
+            secretName: gcp-credentials
+            optional: true
+            items:
+              - key: gcp-key.json
+                path: gcp-key.json
       # Allow the backend to reach Docker registry for pulling runner images
       # if using a private registry, add imagePullSecrets here
 

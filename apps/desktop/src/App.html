@@ -28,6 +28,43 @@
     .btn-danger:hover { background:#7f1d1d; }
     .btn-outline { background:transparent; }
     .btn-sm { padding:3px 10px; font-size:11px; }
+    .btn-accent { background:#7c3aed; border-color:#6d28d9; color:#fff; }
+    .btn-accent:hover { background:#6d28d9; }
+
+    /* Tab bar */
+    #tab-bar { display:flex; align-items:center; gap:0; padding:0 16px; background:#0f172a; border-bottom:1px solid #1e293b; }
+    .tab-btn { padding:8px 20px; border:none; background:transparent; color:#64748b; font-size:12px; font-weight:500; cursor:pointer; border-bottom:2px solid transparent; transition:all 0.15s; font-family:inherit; }
+    .tab-btn:hover { color:#e2e8f0; }
+    .tab-btn.active { color:#22c55e; border-bottom-color:#22c55e; }
+
+    /* Log Checker overlay */
+    #log-checker-overlay { display:none; position:fixed; inset:0; background:#020617; z-index:200; flex-direction:column; }
+    #log-checker-overlay.open { display:flex; }
+    #log-checker-header { display:flex; align-items:center; gap:12px; padding:10px 16px; background:#0f172a; border-bottom:1px solid #1e293b; }
+    #log-checker-header h2 { font-size:14px; font-weight:600; flex:1; }
+    #log-checker-body { flex:1; display:flex; gap:0; overflow:hidden; }
+    .log-input-panel { width:420px; min-width:320px; display:flex; flex-direction:column; border-right:1px solid #1e293b; background:#0a0f1a; }
+    .log-input-header { padding:12px 16px; border-bottom:1px solid #1e293b; display:flex; align-items:center; gap:8px; }
+    .log-input-header label { font-size:11px; font-weight:600; color:#94a3b8; text-transform:uppercase; letter-spacing:0.5px; }
+    .log-input-body { flex:1; padding:12px; display:flex; flex-direction:column; gap:10px; }
+    .log-textarea { flex:1; min-height:200px; background:#0f172a; border:1px solid #1e293b; border-radius:6px; color:#e2e8f0; font-family:'JetBrains Mono',monospace; font-size:12px; padding:12px; resize:vertical; line-height:1.5; }
+    .log-textarea:focus { outline:none; border-color:#7c3aed; }
+    .log-file-upload { display:flex; align-items:center; gap:8px; }
+    .log-file-upload input[type="file"] { display:none; }
+    .log-file-name { font-size:11px; color:#94a3b8; font-family:'JetBrains Mono',monospace; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .log-file-clear { color:#64748b; cursor:pointer; font-size:14px; }
+    .log-stats { font-size:10px; color:#64748b; display:flex; gap:12px; }
+
+    .log-output-panel { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+    .log-output-header { padding:12px 16px; border-bottom:1px solid #1e293b; display:flex; align-items:center; gap:8px; }
+    .log-output-body { flex:1; padding:16px; overflow-y:auto; font-size:13px; line-height:1.6; }
+    .log-output-body h3 { color:#22c55e; font-size:14px; margin:16px 0 8px; }
+    .log-output-body h3:first-child { margin-top:0; }
+    .log-output-body code { background:#1e293b; padding:1px 6px; border-radius:3px; font-family:'JetBrains Mono',monospace; font-size:11px; color:#f59e0b; }
+    .log-output-body pre { background:#0f172a; border:1px solid #1e293b; border-radius:6px; padding:12px; overflow-x:auto; font-family:'JetBrains Mono',monospace; font-size:11px; line-height:1.5; margin:8px 0; }
+    .log-output-body .error-highlight { color:#ef4444; }
+    .log-output-body .warn-highlight { color:#f59e0b; }
+    .log-output-placeholder { color:#475569; font-size:14px; display:flex; align-items:center; justify-content:center; height:100%; }
 
     /* Activity Board */
     #activity-bar { display:flex; align-items:center; gap:12px; padding:8px 16px; background:#0f172a; border-bottom:1px solid #1e293b; font-size:12px; position:relative; }
@@ -119,6 +156,7 @@
     <span style="flex:1"></span>
     <span class="review-count" id="review-count"></span>
     <button class="btn btn-primary" id="btn-retry" onclick="retryConnection()" style="display:none">Retry Connection</button>
+    <button class="btn btn-accent" onclick="openLogChecker()" title="Analyze logs with AI">&#128269; Log Checker</button>
     <button class="btn-icon" onclick="toggleSettings()" title="Settings">&#9881;</button>
   </div>
 
@@ -219,6 +257,42 @@
     <button class="btn" id="btn-trigger" disabled onclick="triggerReview()">Manually Trigger Review</button>
   </div>
 
+  <!-- Log Checker Overlay -->
+  <div id="log-checker-overlay">
+    <div id="log-checker-header">
+      <h2>&#128269; Log Checker — AI-Powered Debugging</h2>
+      <span style="font-size:11px;color:#64748b" id="log-checker-status">Ready</span>
+      <button class="btn btn-outline btn-sm" onclick="closeLogChecker()">&#10005; Close</button>
+    </div>
+    <div id="log-checker-body">
+      <div class="log-input-panel">
+        <div class="log-input-header">
+          <label>Log Input</label>
+          <span style="flex:1"></span>
+          <span class="log-stats" id="log-stats"></span>
+        </div>
+        <div class="log-input-body">
+          <textarea class="log-textarea" id="log-textarea" placeholder="Paste your logs here...&#10;&#10;Supports plain text, JSON, syslog, and most common log formats.&#10;Max ~50K characters. DeepSeek will analyze the structure, extract errors,&#10;search patterns, and provide debugging priorities."></textarea>
+          <div class="log-file-upload">
+            <button class="btn btn-sm btn-outline" onclick="document.getElementById('log-file-input').click()">&#128193; Upload File</button>
+            <input type="file" id="log-file-input" accept=".log,.txt,.json,.csv" onchange="handleLogFileUpload(event)">
+            <span class="log-file-name" id="log-file-name"></span>
+            <span class="log-file-clear" id="log-file-clear" style="display:none" onclick="clearLogFile()">&times;</span>
+          </div>
+          <button class="btn btn-accent" id="btn-analyze" onclick="analyzeLogs()" style="width:100%;padding:10px;">&#9889; Analyze with DeepSeek</button>
+        </div>
+      </div>
+      <div class="log-output-panel">
+        <div class="log-output-header">
+          <span style="font-size:11px;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:0.5px;">Analysis Results</span>
+        </div>
+        <div class="log-output-body" id="log-output-body">
+          <div class="log-output-placeholder">Paste logs or upload a file, then click Analyze.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Settings Overlay -->
   <div id="settings-overlay">
     <div class="settings-panel">
@@ -250,5 +324,6 @@
 
   <script src="https://cdn.socket.io/4.7.0/socket.io.min.js"></script>
   <script src="review-gate.js"></script>
+  <script src="log-checker.js"></script>
 </body>
 </html>
