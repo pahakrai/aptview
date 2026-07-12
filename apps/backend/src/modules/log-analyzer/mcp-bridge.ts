@@ -103,39 +103,73 @@ export class McpBridge {
     return allTools;
   }
 
-  /**
-   * Connect via SSE transport (K8s sidecar mode).
-   *
-   * Fetches tool definitions from the MCP server's SSE endpoint.
-   * In production, this would use the MCP SDK's SSEClientTransport.
-   * For now, it returns stub tool definitions matching the known MCP packages.
-   *
-   * STUB: Replace with real MCP SSE client when @modelcontextprotocol/sdk is wired:
-   *
-   *   import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
-   *   const transport = new SSEClientTransport(new URL(cfg.url!));
-   *   const client = new Client({ name: `${source}-worker`, version: '1.0.0' });
-   *   await client.connect(transport);
-   *   const { tools } = await client.listTools();
-   *   return tools.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
-   */
-  private async connectViaSse(
+/**
+ * Connect via SSE transport (K8s sidecar mode).
+ *
+ * Uses @modelcontextprotocol/sdk to connect to the MCP server sidecar
+ * via HTTP/SSE. Fetches real tool definitions from the running server.
+ * Falls back to known tool stubs if the SDK import fails.
+ */
+private async connectViaSse(
     source: string,
     cfg: McpServerConfig,
   ): Promise<McpToolDefinition[]> {
-    // Verify the sidecar is reachable
-    if (cfg.url) {
-      try {
-        const res = await fetch(cfg.url, { method: 'GET' });
-        console.log(`[McpBridge] ${source} SSE endpoint reachable: ${res.status}`);
-      } catch {
-        console.warn(`[McpBridge] ${source} SSE endpoint not reachable at ${cfg.url} — sidecar may still be starting`);
-      }
+    if (!cfg.url) {
+      console.warn(`[McpBridge] ${source}: no URL configured`);
+      return this.getToolStubs(source);
     }
 
-    // Return known tool stubs for each MCP source
+    // Try real MCP SDK connection first
+    try {
+      return await this.connectWithRealSdk(source, cfg.url);
+    } catch (err) {
+      console.warn(
+        `[McpBridge] ${source}: MCP SDK connection failed (${(err as Error).message}) — falling back to stubs`,
+      );
+    }
+
+    // Fallback: return known tool stubs
     return this.getToolStubs(source);
   }
+
+  /**
+   * Connect using the real @modelcontextprotocol/sdk.
+   * Dynamic import to avoid crashing if the package isn't installed.
+   */
+  private async connectWithRealSdk(
+    source: string,
+    url: string,
+  ): Promise<McpToolDefinition[]> {
+    // Dynamic import — won't throw at load time if package is missing
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { StreamableHTTPClientTransport } = await import(
+      '@modelcontextprotocol/sdk/client/streamableHttp.js'
+    );
+
+    const transport = new StreamableHTTPClientTransport(new URL(url));
+    const client = new Client(
+      { name: `aigov-log-analyzer-${source}`, version: '1.0.0' },
+      { capabilities: {} },
+    );
+
+    await client.connect(transport);
+    console.log(`[McpBridge] ${source}: connected via MCP SDK`);
+
+    const { tools } = await client.listTools();
+    console.log(`[McpBridge] ${source}: ${tools.length} tools discovered`);
+
+    // Store the client for later tool calls
+    this.mcpClients.set(source, client);
+
+    return tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.inputSchema as Record<string, unknown>,
+    }));
+  }
+
+  /** Connected MCP clients (for real SDK connections) */
+  private mcpClients = new Map<string, unknown>();
 
   /**
    * Connect via stdio transport (local dev mode).
@@ -224,6 +258,74 @@ export class McpBridge {
       ];
     }
 
+    if (source === 'kubetail') {
+      return [
+        {
+          name: 'kubetail_list_pods',
+          description: 'List all pods in a Kubernetes namespace with status, restarts, and age. Use this to spot crashing or unhealthy pods.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              namespace: { type: 'string', description: 'Kubernetes namespace (e.g. "production", "aigov")' },
+              labelSelector: { type: 'string', description: 'Optional label filter (e.g. "app=payment-gateway")' },
+            },
+          },
+        },
+        {
+          name: 'kubetail_get_logs',
+          description: 'Fetch and aggregate logs across all replicas of a deployment. Strips noise (200 OK lines) and groups recurring error patterns. Use this to find error fingerprints.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              deployment: { type: 'string', description: 'Deployment name (e.g. "payment-gateway")' },
+              namespace: { type: 'string', description: 'Kubernetes namespace' },
+              since: { type: 'string', description: 'Time range (e.g. "15m", "1h", "30s")' },
+              tail: { type: 'number', description: 'Number of recent lines per replica (default: 200)' },
+            },
+            required: ['deployment'],
+          },
+        },
+        {
+          name: 'kubetail_scan_errors',
+          description: 'Scan logs across all replicas and group recurring error patterns with counts. Returns a prioritized list of exceptions sorted by frequency.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              deployment: { type: 'string', description: 'Deployment name' },
+              namespace: { type: 'string', description: 'Kubernetes namespace' },
+              since: { type: 'string', description: 'Time range (e.g. "15m", "1h")' },
+              pattern: { type: 'string', description: 'Optional regex to filter error messages' },
+            },
+            required: ['deployment'],
+          },
+        },
+        {
+          name: 'kubetail_describe_pod',
+          description: 'Get detailed pod info including events, conditions, resource limits, and container statuses.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              podName: { type: 'string', description: 'Full pod name' },
+              namespace: { type: 'string', description: 'Kubernetes namespace' },
+            },
+            required: ['podName'],
+          },
+        },
+        {
+          name: 'kubetail_get_config',
+          description: 'Inspect environment variables, ConfigMaps, and Secrets referenced by a deployment. Use this to check for misconfigured endpoints or ports.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              deployment: { type: 'string', description: 'Deployment name' },
+              namespace: { type: 'string', description: 'Kubernetes namespace' },
+            },
+            required: ['deployment'],
+          },
+        },
+      ];
+    }
+
     if (source === 'gcp') {
       return [
         {
@@ -277,30 +379,38 @@ export class McpBridge {
 
     const cfg = this.configs.get(source);
 
-    // SSE mode: forward to MCP sidecar via HTTP
-    if (cfg?.transport === 'sse' && cfg?.url) {
-      try {
-        const baseUrl = cfg.url.replace(/\/sse$/, '');
-        const res = await fetch(`${baseUrl}/tools/call`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, arguments: args }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          return { content: data.content || [{ type: 'text', text: JSON.stringify(data) }] };
+    // SSE mode: use real MCP client if connected, otherwise HTTP fallback
+    if (cfg?.transport === 'sse') {
+      // Try real MCP SDK client first
+      const mcpClient = this.mcpClients.get(source) as {
+        callTool: (params: { name: string; arguments: Record<string, unknown> }) => Promise<{ content: Array<{ type: string; text?: string }> }>;
+      } | undefined;
+
+      if (mcpClient) {
+        try {
+          const result = await mcpClient.callTool({ name, arguments: args });
+          return { content: result.content };
+        } catch (err) {
+          console.warn(`[McpBridge] ${source}: real SDK call failed (${(err as Error).message})`);
         }
-      } catch (err) {
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              error: `Failed to call ${name} on ${source} sidecar`,
-              detail: (err as Error).message,
-              sidecarUrl: cfg.url,
-            }),
-          }],
-        };
+      }
+
+      // HTTP fallback for sidecars without SDK client
+      if (cfg.url) {
+        try {
+          const baseUrl = cfg.url.replace(/\/sse$/, '');
+          const res = await fetch(`${baseUrl}/tools/call`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, arguments: args }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            return { content: data.content || [{ type: 'text', text: JSON.stringify(data) }] };
+          }
+        } catch {
+          // Fall through to stub
+        }
       }
     }
 
@@ -328,6 +438,13 @@ export class McpBridge {
   }
 
   async disconnect(): Promise<void> {
+    // Close real MCP client connections
+    for (const [, client] of this.mcpClients) {
+      try {
+        await (client as { close: () => Promise<void> }).close();
+      } catch { /* ignore */ }
+    }
+    this.mcpClients.clear();
     this.connectedSources.clear();
     this.mcpTools = [];
     this.toolToSource.clear();

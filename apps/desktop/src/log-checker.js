@@ -1,17 +1,17 @@
 /**
- * log-checker.js — AI-powered log analysis via DeepSeek
+ * log-checker.js — AI-powered K8s cluster debugging via Kubetail MCP + DeepSeek
  *
  * Flow:
- *   User pastes logs or uploads a file → clicks Analyze
- *   → POST /api/v1/log-analyzer/analyze
- *   → WebSocket receives log-analyzer:complete with results
- *   → Renders structured analysis in output panel
+ *   User types a question or clicks a suggestion → clicks Analyze
+ *   → POST /api/v1/log-analyzer/analyze with the prompt
+ *   → Backend invokes LangGraph + DeepSeek with Kubetail MCP tools
+ *   → DeepSeek calls MCP tools to fetch logs from K8s cluster
+ *   → WebSocket streams tokens in real-time
+ *   → Renders structured diagnostic report
  */
 
 const LOG_API_BASE = 'http://localhost:3000/api/v1/log-analyzer';
 let logSocket = null;
-let logFileContent = null;
-let logFileName = null;
 let currentLogThreadId = null;
 
 // ===========================================================================
@@ -21,10 +21,21 @@ let currentLogThreadId = null;
 function openLogChecker() {
   document.getElementById('log-checker-overlay').classList.add('open');
   connectLogWebSocket();
+  document.getElementById('prompt-input').focus();
 }
 
 function closeLogChecker() {
   document.getElementById('log-checker-overlay').classList.remove('open');
+}
+
+// ===========================================================================
+// Prompt suggestions
+// ===========================================================================
+
+function usePrompt(chip) {
+  const text = chip.textContent.trim();
+  document.getElementById('prompt-input').value = text;
+  document.getElementById('prompt-input').focus();
 }
 
 // ===========================================================================
@@ -45,23 +56,44 @@ function connectLogWebSocket() {
   logSocket.on('log-analyzer:started', (data) => {
     if (data.threadId === currentLogThreadId) {
       document.getElementById('log-checker-status').textContent =
-        'Analyzing...';
-      document.getElementById('log-output-body').innerHTML =
-        '<div class="log-output-placeholder">DeepSeek is analyzing the logs — checking format, extracting errors, searching patterns...</div>';
-      document.getElementById('btn-analyze').disabled = true;
-      document.getElementById('btn-analyze').textContent = '⏳ Analyzing...';
+        'Fetching cluster data...';
+      document.getElementById('log-output-body').innerHTML = '';
+    }
+  });
+
+  // Streaming tokens — append each token to the output in real-time
+  logSocket.on('log-analyzer:token', (data) => {
+    if (data.threadId === currentLogThreadId && data.token) {
+      const body = document.getElementById('log-output-body');
+      if (!body.dataset.streaming || body.dataset.streaming === 'false') {
+        body.innerHTML = '';
+        body.dataset.streaming = 'true';
+      }
+      body.textContent += data.token;
+      body.scrollTop = body.scrollHeight;
     }
   });
 
   logSocket.on('log-analyzer:complete', (data) => {
     if (data.threadId === currentLogThreadId) {
+      const statusLabels = {
+        complete: 'Complete',
+        error: 'Error',
+        cancelled: 'Cancelled',
+      };
       document.getElementById('log-checker-status').textContent =
-        data.status === 'error' ? 'Error' : 'Complete';
-      document.getElementById('btn-analyze').disabled = false;
-      document.getElementById('btn-analyze').textContent = '⚡ Analyze with DeepSeek';
+        statusLabels[data.status] || data.status || 'Done';
+
+      setButtonMode('analyze');
 
       if (data.analysisText) {
+        const body = document.getElementById('log-output-body');
+        body.dataset.streaming = 'false';
         renderAnalysis(data.analysisText);
+      }
+
+      if (data.status === 'complete' || data.status === 'error' || data.status === 'cancelled') {
+        currentLogThreadId = null;
       }
     }
   });
@@ -72,113 +104,73 @@ function connectLogWebSocket() {
 }
 
 // ===========================================================================
-// File upload
+// Analyze / Cancel
 // ===========================================================================
 
-function handleLogFileUpload(event) {
-  const file = event.target.files[0];
-  if (!file) return;
-
-  logFileName = file.name;
-  document.getElementById('log-file-name').textContent = file.name;
-  document.getElementById('log-file-clear').style.display = 'inline';
-
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    logFileContent = e.target.result;
-    // Show preview in textarea
-    const preview =
-      logFileContent.length > 5000
-        ? logFileContent.slice(0, 5000) + '\n\n... (truncated in preview, full file will be analyzed)'
-        : logFileContent;
-    document.getElementById('log-textarea').value = preview;
-    updateLogStats();
-  };
-  reader.readAsText(file);
-}
-
-function clearLogFile() {
-  logFileContent = null;
-  logFileName = null;
-  document.getElementById('log-file-input').value = '';
-  document.getElementById('log-file-name').textContent = '';
-  document.getElementById('log-file-clear').style.display = 'none';
-  document.getElementById('log-textarea').value = '';
-  updateLogStats();
-}
-
-// ===========================================================================
-// Textarea monitoring
-// ===========================================================================
-
-// Update stats when user types in the textarea
-document.addEventListener('DOMContentLoaded', () => {
-  const ta = document.getElementById('log-textarea');
-  if (ta) {
-    ta.addEventListener('input', updateLogStats);
+function analyzeLogs() {
+  // If already analyzing, cancel instead
+  if (currentLogThreadId && document.getElementById('btn-analyze').dataset.mode === 'cancel') {
+    return cancelLogAnalysis();
   }
-});
 
-function updateLogStats() {
-  const text = document.getElementById('log-textarea').value;
-  const lines = text.split('\n').filter((l) => l.trim().length > 0).length;
-  const chars = text.length;
-  const errors = (text.match(/\b(ERROR|FATAL|CRITICAL|CRIT)\b/gi) || []).length;
-  const warns = (text.match(/\bWARN(?:ING)?\b/gi) || []).length;
-
-  const parts = [];
-  if (lines > 0) parts.push(`${lines} lines`);
-  if (chars > 0) parts.push(`${(chars / 1024).toFixed(1)}KB`);
-  if (errors > 0) parts.push(`${errors} errors`);
-  if (warns > 0) parts.push(`${warns} warnings`);
-
-  document.getElementById('log-stats').textContent = parts.join(' · ');
-}
-
-// ===========================================================================
-// Analyze
-// ===========================================================================
-
-async function analyzeLogs() {
-  const textareaContent = document.getElementById('log-textarea').value.trim();
-  const content = logFileContent || textareaContent;
-
-  if (!content) {
-    alert('Please paste logs or upload a file first.');
+  const prompt = document.getElementById('prompt-input').value.trim();
+  if (!prompt) {
+    alert('Please type a question or click a suggestion.');
     return;
   }
 
-  if (content.length > 50000) {
-    alert(`Log content is ${(content.length / 1024).toFixed(1)}KB. Maximum is ~50KB. Please trim the logs.`);
-    return;
-  }
-
-  document.getElementById('btn-analyze').disabled = true;
-  document.getElementById('btn-analyze').textContent = '⏳ Submitting...';
+  setButtonMode('cancel');
   document.getElementById('log-checker-status').textContent = 'Submitting...';
   document.getElementById('log-output-body').innerHTML =
-    '<div class="log-output-placeholder">Submitting logs for analysis...</div>';
+    '<div class="log-output-placeholder">Submitting query to DeepSeek + Kubetail MCP...</div>';
+
+  fetch(`${LOG_API_BASE}/analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      logContent: prompt,
+      fileName: 'cluster-query',
+    }),
+  })
+    .then((res) => res.json())
+    .then((data) => {
+      currentLogThreadId = data.threadId;
+      console.log(`[LogChecker] Analysis started: thread ${data.threadId}`);
+    })
+    .catch((err) => {
+      console.error('[LogChecker] Submit failed:', err);
+      document.getElementById('log-output-body').innerHTML =
+        `<div class="log-output-placeholder" style="color:#ef4444">Failed to submit query: ${err.message}</div>`;
+      setButtonMode('analyze');
+      document.getElementById('log-checker-status').textContent = 'Error';
+    });
+}
+
+async function cancelLogAnalysis() {
+  if (!currentLogThreadId) return;
+
+  setButtonMode('analyze');
+  document.getElementById('btn-analyze').textContent = '⏳ Cancelling...';
+  document.getElementById('log-checker-status').textContent = 'Cancelling...';
 
   try {
-    const res = await fetch(`${LOG_API_BASE}/analyze`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        logContent: content,
-        fileName: logFileName || 'pasted-logs.txt',
-      }),
-    });
-
-    const data = await res.json();
-    currentLogThreadId = data.threadId;
-    console.log(`[LogChecker] Analysis started: thread ${data.threadId}`);
+    await fetch(`${LOG_API_BASE}/${currentLogThreadId}/cancel`, { method: 'POST' });
   } catch (err) {
-    console.error('[LogChecker] Submit failed:', err);
-    document.getElementById('log-output-body').innerHTML =
-      `<div class="log-output-placeholder" style="color:#ef4444">Failed to submit logs: ${err.message}</div>`;
-    document.getElementById('btn-analyze').disabled = false;
-    document.getElementById('btn-analyze').textContent = '⚡ Analyze with DeepSeek';
-    document.getElementById('log-checker-status').textContent = 'Error';
+    console.error('[LogChecker] Cancel failed:', err);
+  }
+}
+
+function setButtonMode(mode) {
+  const btn = document.getElementById('btn-analyze');
+  btn.dataset.mode = mode;
+  btn.disabled = false;
+
+  if (mode === 'cancel') {
+    btn.className = 'btn btn-danger';
+    btn.textContent = '⏹ Cancel';
+  } else {
+    btn.className = 'btn btn-accent';
+    btn.textContent = '⚡ Analyze';
   }
 }
 
@@ -188,39 +180,20 @@ async function analyzeLogs() {
 
 function renderAnalysis(markdown) {
   const output = document.getElementById('log-output-body');
-
-  // Simple markdown-to-HTML renderer for the analysis output
   let html = markdown;
 
-  // Headers
   html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
   html = html.replace(/^## (.+)$/gm, '<h2 style="color:#22c55e;font-size:16px;margin:12px 0 8px;">$1</h2>');
-
-  // Bold
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-
-  // Inline code
   html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-
-  // Code blocks
   html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre>$2</pre>');
-
-  // Unordered lists
   html = html.replace(/^- (.+)$/gm, '<li style="margin-left:16px;">$1</li>');
   html = html.replace(/((?:<li[^>]*>.*<\/li>\s*)+)/g, '<ul style="margin:8px 0;">$1</ul>');
-
-  // Ordered lists (numbered)
   html = html.replace(/^\d+\.\s+(.+)$/gm, '<li style="margin-left:16px;">$1</li>');
-
-  // Highlight errors/warnings
-  html = html.replace(/\b(ERROR|FATAL|CRITICAL)\b/g, '<span class="error-highlight">$1</span>');
+  html = html.replace(/\b(ERROR|FATAL|CRITICAL|CrashLoopBackOff|OOMKilled)\b/g, '<span class="error-highlight">$1</span>');
   html = html.replace(/\b(WARN|WARNING)\b/g, '<span class="warn-highlight">$1</span>');
-
-  // Line breaks
   html = html.replace(/\n\n/g, '</p><p>');
   html = html.replace(/\n/g, '<br>');
-
-  // Wrap paragraphs (avoid wrapping pre/code/h3/h2/li)
   html = '<p>' + html + '</p>';
 
   output.innerHTML = html;

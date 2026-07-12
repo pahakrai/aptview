@@ -73,6 +73,10 @@ data:
   MCP_AWS_URL: "http://localhost:8082/sse"
   MCP_GCP_URL: "http://localhost:8083/sse"
 
+  # Kubetail MCP — log aggregation across replicas
+  LOG_ANALYZER_MCP_KUBETAIL: "false"
+  MCP_KUBETAIL_URL: "http://localhost:8084/sse"
+
   # Fallback to stdio transport for local dev (no K8s):
   #   MCP_{SOURCE}_TRANSPORT: "stdio"
   #   MCP_{SOURCE}_COMMAND: "npx"

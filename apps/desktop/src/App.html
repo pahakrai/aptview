@@ -64,7 +64,17 @@
     .log-output-body pre { background:#0f172a; border:1px solid #1e293b; border-radius:6px; padding:12px; overflow-x:auto; font-family:'JetBrains Mono',monospace; font-size:11px; line-height:1.5; margin:8px 0; }
     .log-output-body .error-highlight { color:#ef4444; }
     .log-output-body .warn-highlight { color:#f59e0b; }
-    .log-output-placeholder { color:#475569; font-size:14px; display:flex; align-items:center; justify-content:center; height:100%; }
+    .log-output-placeholder { color:#475569; font-size:14px; display:flex; align-items:center; justify-content:center; height:100%; text-align:center; line-height:1.8; }
+
+    /* Prompt-based input */
+    .prompt-suggestions { display:flex; flex-direction:column; gap:6px; margin-bottom:12px; flex:1; overflow-y:auto; }
+    .prompt-chip { padding:10px 14px; background:#0f172a; border:1px solid #1e293b; border-radius:8px; font-size:12px; color:#94a3b8; cursor:pointer; transition:all 0.15s; line-height:1.4; }
+    .prompt-chip:hover { background:#1e293b; border-color:#334155; color:#e2e8f0; }
+    .prompt-chip:active { background:#1e293b; border-color:#7c3aed; }
+    .prompt-input-row { display:flex; gap:8px; }
+    .prompt-input { flex:1; padding:10px 14px; background:#0f172a; border:1px solid #1e293b; border-radius:8px; color:#e2e8f0; font-family:inherit; font-size:13px; outline:none; }
+    .prompt-input:focus { border-color:#7c3aed; }
+    .prompt-input::placeholder { color:#475569; }
 
     /* Activity Board */
     #activity-bar { display:flex; align-items:center; gap:12px; padding:8px 16px; background:#0f172a; border-bottom:1px solid #1e293b; font-size:12px; position:relative; }
@@ -260,34 +270,37 @@
   <!-- Log Checker Overlay -->
   <div id="log-checker-overlay">
     <div id="log-checker-header">
-      <h2>&#128269; Log Checker — AI-Powered Debugging</h2>
+      <h2>&#128269; Cluster Debugger — AI-Powered K8s Troubleshooting</h2>
       <span style="font-size:11px;color:#64748b" id="log-checker-status">Ready</span>
       <button class="btn btn-outline btn-sm" onclick="closeLogChecker()">&#10005; Close</button>
     </div>
     <div id="log-checker-body">
       <div class="log-input-panel">
         <div class="log-input-header">
-          <label>Log Input</label>
-          <span style="flex:1"></span>
-          <span class="log-stats" id="log-stats"></span>
+          <label>Ask a question about your cluster</label>
         </div>
         <div class="log-input-body">
-          <textarea class="log-textarea" id="log-textarea" placeholder="Paste your logs here...&#10;&#10;Supports plain text, JSON, syslog, and most common log formats.&#10;Max ~50K characters. DeepSeek will analyze the structure, extract errors,&#10;search patterns, and provide debugging priorities."></textarea>
-          <div class="log-file-upload">
-            <button class="btn btn-sm btn-outline" onclick="document.getElementById('log-file-input').click()">&#128193; Upload File</button>
-            <input type="file" id="log-file-input" accept=".log,.txt,.json,.csv" onchange="handleLogFileUpload(event)">
-            <span class="log-file-name" id="log-file-name"></span>
-            <span class="log-file-clear" id="log-file-clear" style="display:none" onclick="clearLogFile()">&times;</span>
+          <div class="prompt-suggestions" id="prompt-suggestions">
+            <div class="prompt-chip" onclick="usePrompt(this)">List all pods in production. Any crashing?</div>
+            <div class="prompt-chip" onclick="usePrompt(this)">Scan logs for errors in the last 15 minutes</div>
+            <div class="prompt-chip" onclick="usePrompt(this)">Check config for recent deployment — wrong endpoint?</div>
+            <div class="prompt-chip" onclick="usePrompt(this)">Find OOMKilled or CrashLoopBackOff pods</div>
+            <div class="prompt-chip" onclick="usePrompt(this)">Show me recurring error patterns grouped by frequency</div>
           </div>
-          <button class="btn btn-accent" id="btn-analyze" onclick="analyzeLogs()" style="width:100%;padding:10px;">&#9889; Analyze with DeepSeek</button>
+          <div class="prompt-input-row">
+            <input type="text" class="prompt-input" id="prompt-input"
+              placeholder="e.g. Scan logs for payment-gateway from last 15 minutes and group errors..."
+              onkeydown="if(event.key==='Enter')analyzeLogs()">
+            <button class="btn btn-accent" id="btn-analyze" onclick="analyzeLogs()">&#9889; Analyze</button>
+          </div>
         </div>
       </div>
       <div class="log-output-panel">
         <div class="log-output-header">
-          <span style="font-size:11px;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:0.5px;">Analysis Results</span>
+          <span style="font-size:11px;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:0.5px;">Diagnostic Results</span>
         </div>
         <div class="log-output-body" id="log-output-body">
-          <div class="log-output-placeholder">Paste logs or upload a file, then click Analyze.</div>
+          <div class="log-output-placeholder">Ask a question about your cluster, or click a suggestion above.<br><br>Kubetail MCP + DeepSeek will fetch logs, analyze errors, and return a diagnostic report.</div>
         </div>
       </div>
     </div>

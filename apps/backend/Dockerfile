@@ -23,9 +23,11 @@ WORKDIR /app
 # ---------------------------------------------------------------------------
 # MCP Server Dependencies
 # ---------------------------------------------------------------------------
-# kubectl: required by @flux159/mcp-server-kubernetes for K8s log access
-# MCP server packages are installed globally so npx finds them without download
-RUN apk add --no-cache kubectl curl && \
+# kubectl: required by @flux159/mcp-server-kubernetes + kubetail-mcp for K8s access
+# MCP server packages are installed globally so npx/uvx finds them without download
+RUN apk add --no-cache kubectl curl python3 py3-pip && \
+    pip install --break-system-packages uv && \
+    uv tool install kubetail-mcp && \
     npm install -g \
       @flux159/mcp-server-kubernetes \
       @awslabs/amazon-cloudwatch-logs-mcp \

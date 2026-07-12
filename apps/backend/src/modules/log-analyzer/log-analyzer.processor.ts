@@ -134,6 +134,23 @@ export class LogAnalyzerProcessor extends WorkerHost {
       console.log(`[LogAnalyzerProcessor] MCP AWS enabled (${mode})`);
     }
 
+    // --- Kubetail MCP (log aggregation across replicas) ---
+    if (this.configService.get<string>('LOG_ANALYZER_MCP_KUBETAIL') === 'true') {
+      if (mode === 'sse') {
+        configs.kubetail = {
+          transport: 'sse',
+          url: this.configService.get<string>('MCP_KUBETAIL_URL') || 'http://localhost:8084/sse',
+        };
+      } else {
+        configs.kubetail = {
+          transport: 'stdio',
+          command: 'uvx',
+          args: ['kubetail-mcp'],
+        };
+      }
+      console.log(`[LogAnalyzerProcessor] MCP Kubetail enabled (${mode})`);
+    }
+
     // --- GCP Cloud Logging MCP ---
     if (this.configService.get<string>('LOG_ANALYZER_MCP_GCP') === 'true') {
       if (mode === 'sse') {
@@ -176,6 +193,10 @@ export class LogAnalyzerProcessor extends WorkerHost {
     setLogAnalyzerDependencies({
       deepseekApiKey: this.configService.get<string>('DEEPSEEK_API_KEY'),
       toolbox,
+      onToken: (token: string) => {
+        this.logAnalyzerService.emitToken(threadId, token);
+      },
+      abortSignal: this.logAnalyzerService.getSignal(threadId),
     });
 
     const graph = buildLogAnalyzerGraph();

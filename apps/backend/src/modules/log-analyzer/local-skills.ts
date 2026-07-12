@@ -158,11 +158,11 @@ function skillPrioritizeBySLA(args: Record<string, unknown>): string {
 
   // Find best match — exact match first, then partial
   const sla =
-    DEFAULT_SLA_MAP[serviceName] ||
-    Object.entries(DEFAULT_SLA_MAP).find(([key]) =>
+    effectiveSLAMap[serviceName] ||
+    Object.entries(effectiveSLAMap).find(([key]) =>
       serviceName.includes(key) || key.includes(serviceName),
     )?.[1] ||
-    DEFAULT_SLA_MAP['notification']; // fallback
+    effectiveSLAMap['notification']; // fallback
 
   const lines = [
     `**Service**: \`${serviceName}\``,
@@ -262,8 +262,8 @@ function skillRouteDiagnosticToOwner(args: Record<string, unknown>): string {
   const diagnosticSummary = (args.diagnosticSummary as string || '').slice(0, 1000);
 
   const route =
-    DEFAULT_TEAM_ROUTES[serviceName] ||
-    Object.entries(DEFAULT_TEAM_ROUTES).find(([key]) =>
+    effectiveTeamRoutes[serviceName] ||
+    Object.entries(effectiveTeamRoutes).find(([key]) =>
       serviceName.includes(key) || key.includes(serviceName),
     )?.[1];
 
@@ -297,6 +297,64 @@ function skillRouteDiagnosticToOwner(args: Record<string, unknown>): string {
   lines.push('> have been identified. If this is P1/P2, page the on-call via PagerDuty.');
 
   return lines.join('\n');
+}
+
+// ============================================================================
+// Load overrides from environment variables
+// ============================================================================
+
+/**
+ * Load SLA overrides from env vars.
+ * Format: SLA_OVERRIDE_SERVICE_NAME=P1-CRITICAL:15m:Description
+ * Example: SLA_OVERRIDE_PAYMENT=P1-CRITICAL:15m:Core revenue path
+ */
+function loadSlaOverrides(): Record<string, SLAMap> {
+  const overrides: Record<string, SLAMap> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!key.startsWith('SLA_OVERRIDE_')) continue;
+    const serviceName = key.replace('SLA_OVERRIDE_', '').toLowerCase();
+    const parts = (value || '').split(':');
+    overrides[serviceName] = {
+      priority: parts[0] || 'P3-MEDIUM',
+      responseSLA: parts[1] || '2h',
+      description: parts[2] || `Custom SLA override for ${serviceName}`,
+    };
+  }
+  return overrides;
+}
+
+/**
+ * Load team routing overrides from env vars.
+ * Format: TEAM_ROUTE_SERVICE_NAME=TeamName:#slack-channel:repo/path
+ * Example: TEAM_ROUTE_PAYMENT=Platform:#team-platform:platform/payment-svc
+ */
+function loadTeamRouteOverrides(): Record<string, TeamRoute> {
+  const overrides: Record<string, TeamRoute> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!key.startsWith('TEAM_ROUTE_')) continue;
+    const serviceName = key.replace('TEAM_ROUTE_', '').toLowerCase();
+    const parts = (value || '').split(':');
+    overrides[serviceName] = {
+      team: parts[0] || 'Unknown',
+      slackChannel: parts[1] || '#general',
+      repo: parts[2] || '',
+      pagerDutyService: parts[3] || undefined,
+    };
+  }
+  return overrides;
+}
+
+// Merge overrides at module load time
+const slaOverrides = loadSlaOverrides();
+const teamOverrides = loadTeamRouteOverrides();
+const effectiveSLAMap = { ...DEFAULT_SLA_MAP, ...slaOverrides };
+const effectiveTeamRoutes = { ...DEFAULT_TEAM_ROUTES, ...teamOverrides };
+
+if (Object.keys(slaOverrides).length > 0) {
+  console.log(`[LocalSkills] SLA overrides loaded: ${Object.keys(slaOverrides).join(', ')}`);
+}
+if (Object.keys(teamOverrides).length > 0) {
+  console.log(`[LocalSkills] Team route overrides loaded: ${Object.keys(teamOverrides).join(', ')}`);
 }
 
 // ============================================================================

@@ -258,6 +258,38 @@ spec:
           periodSeconds: 10
           timeoutSeconds: 3
 
+      # Kubetail MCP Server (log aggregation across replicas)
+      #   Port: 8084  |  SSE endpoint: http://localhost:8084/sse
+      - name: mcp-kubetail
+        image: aigov-backend:latest
+        imagePullPolicy: IfNotPresent
+        command: ["uvx"]
+        args: ["kubetail-mcp", "--transport", "sse", "--port", "8084"]
+        ports:
+          - containerPort: 8084
+            name: mcp-kubetail
+        volumeMounts:
+          - name: kubeconfig
+            mountPath: /secrets/kubeconfig
+            readOnly: true
+        env:
+          - name: KUBECONFIG
+            value: /secrets/kubeconfig/config
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        readinessProbe:
+          httpGet:
+            path: /sse
+            port: 8084
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+
       # GCP Cloud Logging MCP Server
       #   Port: 8083  |  SSE endpoint: http://localhost:8083/sse
       - name: mcp-gcp

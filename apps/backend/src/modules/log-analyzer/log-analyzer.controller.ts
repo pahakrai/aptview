@@ -58,6 +58,22 @@ export class LogAnalyzerController implements OnGatewayConnection {
   }
 
   /**
+   * Cancel a running analysis by thread ID.
+   * Aborts the DeepSeek streaming loop and removes the BullMQ job.
+   */
+  @Post(':id/cancel')
+  async cancel(@Param('id') id: string) {
+    const result = await this.logAnalyzerService.cancelAnalysis(id);
+
+    this.server.emit('log-analyzer:status', {
+      threadId: id,
+      status: result.cancelled ? 'cancelled' : 'error',
+    });
+
+    return result;
+  }
+
+  /**
    * Get analysis result by thread ID.
    */
   @Get(':id')
