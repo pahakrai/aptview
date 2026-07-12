@@ -123,6 +123,49 @@ Split-pane view:
 | Backend → Electron | WebSocket (Socket.IO) | Real-time review streaming, status updates |
 | Electron Main → Renderer | IPC | Engine lifecycle events (start/stop/error) |
 
+## Cluster Debugger (Log Checker)
+
+Click the 🔍 **Log Checker** button in the status bar to open the Cluster Debugger overlay.
+
+```
+┌─ Cluster Debugger ──────────────────────────────────────────────────┐
+│ 🔍 Cluster Debugger — AI-Powered K8s Troubleshooting    Ready  [✕] │
+├─ Input ──────────────────┬─ Diagnostic Results ────────────────────┤
+│ Ask a question about     │                                          │
+│ your cluster             │ ### Cluster Health Overview              │
+│                          │ - 3 pods running, 1 CrashLoopBackOff     │
+│ ┌──────────────────────┐ │                                          │
+│ │ List all pods in     │ │ ### Error Analysis                       │
+│ │ production. Any      │ │ - ConnectionTimeoutException (47x)       │
+│ │ crashing?            │ │   → P1-CRITICAL, 15m SLA                │
+│ │                      │ │                                          │
+│ │ Scan logs for errors │ │ ### Root Cause                           │
+│ │ in the last 15 min   │ │ - Wrong DB endpoint in ConfigMap         │
+│ │                      │ │                                          │
+│ │ Check config for     │ │ ### Team Routing                         │
+│ │ recent deployment    │ │ - Platform Engineering, #team-platform   │
+│ └──────────────────────┘ │                                          │
+│                          │                                          │
+│ [e.g. Scan logs for...] [⚡ Analyze]                                │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+**How it works:**
+1. Type a question or click a suggestion chip
+2. Backend sends prompt to DeepSeek with Kubetail MCP tools
+3. DeepSeek calls MCP tools to fetch live K8s data (pods, logs, configs)
+4. Local skills add business context (SLA priority, team routing)
+5. Results stream in real-time via WebSocket
+
+**Available MCP servers** (enable in `k8s/mcp-config.yaml`):
+- Kubernetes — pod listing, log fetching, pod descriptions
+- Kubetail — cross-replica log aggregation, error pattern grouping
+- AWS CloudWatch — log group search and filtering
+- GCP Cloud Logging — log entry listing and tailing
+
+**Cancel:** Click ⏹ Cancel to immediately abort the running analysis
+via AbortSignal (tears down the TCP connection to DeepSeek).
+
 ## Dependencies
 
 The desktop app requires:

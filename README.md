@@ -93,13 +93,14 @@ apps/
 ├── backend/       NestJS monolith (API + BullMQ workers)
 │   ├── audits/    Scoring pipeline (inline | sdk | sandbox)
 │   ├── reviews/   HITL pipeline (LangGraph + DeepSeek)
+│   ├── log-analyzer/  Cluster debugger (LangGraph + MCP tools)
 │   ├── webhooks/  GitHub PR webhook (HMAC validated)
 │   └── standards/ Coding guidelines (CRUD + PDF upload)
 ├── frontend/      React dashboard (dark theme)
-├── desktop/       Electron app (HITL review panel)
+├── desktop/       Electron app (HITL review panel + cluster debugger)
 libs/              Shared types, DB client, utilities
-k8s/               Kubernetes manifests (production)
-docs/              Setup, scoring, CI/CD, architecture
+k8s/               Kubernetes manifests + MCP server configs
+docs/              Setup, scoring, reviews, architecture, configuration
 ```
 
 ## Key Features
@@ -107,6 +108,9 @@ docs/              Setup, scoring, CI/CD, architecture
 - **Dual pipeline** — scoring runs automatically, reviews wait for human approval
 - **Three analysis modes** — regex, SDK, or K8s sandbox
 - **Percentage scores** — compliance, efficiency, coverage (not just pass/fail)
+- **Cluster Debugger** — AI-powered K8s troubleshooting via Kubetail MCP + DeepSeek
+- **MCP server integration** — Kubernetes, AWS CloudWatch, GCP Cloud Logging, Kubetail
+- **Local business skills** — SLA-based priority, cross-cloud trace correlation, team routing
 - **Task decomposition** — break sprints into quantifiable sub-tasks
 - **PDF upload** — paste or upload coding standards
 - **Cloudflare Tunnel** — expose localhost without opening ports

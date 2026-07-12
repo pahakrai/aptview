@@ -230,6 +230,55 @@ kubectl rollout restart deploy/backend -n aigov
 
 ---
 
+### 4d. MCP Server Configuration (`k8s/mcp-config.yaml`)
+
+The Cluster Debugger connects to MCP (Model Context Protocol) servers running
+as sidecar containers. Each server is enabled via a feature flag.
+
+| Key | Default | Purpose |
+|---|---|---|
+| `LOG_ANALYZER_MCP_ENABLED` | `false` | Master switch — set to `true` to enable any MCP servers |
+| `LOG_ANALYZER_MCP_K8S` | `false` | Kubernetes pod/log access |
+| `LOG_ANALYZER_MCP_KUBETAIL` | `false` | Cross-replica log aggregation (kubetail-mcp) |
+| `LOG_ANALYZER_MCP_AWS` | `false` | AWS CloudWatch log groups |
+| `LOG_ANALYZER_MCP_GCP` | `false` | Google Cloud Logging entries |
+| `MCP_TRANSPORT_MODE` | `sse` | Transport: `sse` (K8s sidecars) or `stdio` (local dev) |
+
+**MCP server endpoints** (auto-configured, localhost within the pod):
+- K8s MCP: `http://localhost:8081/sse`
+- AWS MCP: `http://localhost:8082/sse`
+- GCP MCP: `http://localhost:8083/sse`
+- Kubetail MCP: `http://localhost:8084/sse`
+
+**Credential secrets required per server:**
+
+| Server | Required secrets |
+|---|---|
+| K8s | `kubectl create secret generic kubeconfig --from-file=config=$HOME/.kube/config -n aigov` |
+| AWS | AWS credentials in `k8s/secrets.yaml` (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`) |
+| GCP | Service account key: `kubectl create secret generic gcp-credentials --from-file=gcp-key.json=./gcp-key.json -n aigov` |
+| Kubetail | Same kubeconfig secret as K8s |
+
+**Local business skills** (always available, no config needed):
+- `prioritize_by_sla` — SLA map configurable via `SLA_OVERRIDE_*=P1-CRITICAL:15m:Description`
+- `route_diagnostic_to_owner` — Team routing configurable via `TEAM_ROUTE_*=TeamName:#slack:repo/path`
+
+**Example — enable Kubetail + business skills only:**
+```yaml
+# k8s/mcp-config.yaml
+LOG_ANALYZER_MCP_ENABLED:  "true"
+LOG_ANALYZER_MCP_KUBETAIL: "true"
+```
+```bash
+kubectl create secret generic kubeconfig --from-file=config=$HOME/.kube/config -n aigov
+skaffold run
+```
+
+No manual JSON secrets needed — the backend reads these flags and auto-generates
+the MCP connection config at startup.
+
+---
+
 ## 5. Quick Setup Checklist
 
 ```
@@ -243,7 +292,8 @@ kubectl rollout restart deploy/backend -n aigov
 □ 8. Run skaffold dev
 □ 9. Start desktop app: yarn workspace aigov-desktop start
 □ 10. Open settings (⚙) → configure target branches per repo
-□ 11. Open a test PR → verify webhook arrives → approve review
+□ 11. (Optional) Enable Cluster Debugger: set LOG_ANALYZER_MCP_ENABLED + KUBETAIL to "true" in mcp-config.yaml
+□ 12. Open a test PR → verify webhook arrives → approve review
 ```
 
 ## 6. Testing the Configuration

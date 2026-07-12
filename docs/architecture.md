@@ -82,6 +82,51 @@ See [reviews.md](reviews.md) for a detailed explanation of the LangGraph
 orchestration, the DeepSeek tool loop, the BullMQ two-job split, and the
 WebSocket + polling dual channel.
 
+## Log Analyzer Pipeline (Cluster Debugger)
+
+```
+Desktop App (🔍 Cluster Debugger button)
+  │  natural language prompt ("Scan logs for errors in payment-gateway...")
+  ▼
+POST /api/v1/log-analyzer/analyze
+  │
+  ▼
+BullMQ 'log-analyzer' queue
+  │
+  ▼
+LogAnalyzerProcessor
+  │  1. Reads feature flags from ConfigMap (LOG_ANALYZER_MCP_K8S, ...)
+  │  2. Auto-generates MCP connection config (no manual secrets)
+  │  3. Builds UnifiedToolbox (4 core tools + 3 skills + up to 12 MCP tools)
+  │  4. graph.invoke()
+  ▼
+LangGraph (single node: analyzeLogs)
+  │
+  ├─ DeepSeek API with SSE streaming + AbortSignal for cancellation
+  │   ├─ tool_calls? → dispatch to toolbox router (core/skill/MCP)
+  │   └─ content?    → streaming tokens → WebSocket → desktop
+  │
+  ▼
+LogAnalyzerService.saveAnalysis()
+  │  emits 'log-analyzer:complete' via WebSocket
+  ▼
+Desktop renders structured diagnostic report
+```
+
+**MCP servers** run as sidecar containers in the backend pod:
+- `mcp-k8s` (port 8081) — Kubernetes pod/log access
+- `mcp-aws` (port 8082) — AWS CloudWatch log groups
+- `mcp-kubetail` (port 8084) — cross-replica log aggregation
+- `mcp-gcp` (port 8083) — Google Cloud Logging entries
+
+**Local business skills** provide domain context:
+- `prioritize_by_sla` — P1-CRITICAL → P4-LOW with response SLA windows
+- `correlate_cross_cloud_trace` — distributed trace timeline construction
+- `route_diagnostic_to_owner` — team, Slack, repo, PagerDuty mapping
+
+See [reviews.md#log-analyzer-pipeline](reviews.md#log-analyzer-pipeline) for
+the full three-layer toolbox architecture, tool router, and analysis protocol.
+
 ## Key Design Decisions
 
 1. **Monolith, not microservices**: Single NestJS app with feature modules. Simpler to develop and deploy until you have 100+ customers. The module boundaries are clean — extracting a service later is a refactor, not a rewrite.
@@ -151,6 +196,10 @@ POST   /api/v1/reviews/:id/approve        Approve review → post to GitHub
 POST   /api/v1/reviews/:id/cancel         Cancel review → discard
 GET    /api/v1/reviews/pending            List pending reviews
 GET    /api/v1/reviews/:id                Get review status + text
+
+POST   /api/v1/log-analyzer/analyze       Submit prompt for cluster debugging
+POST   /api/v1/log-analyzer/:id/cancel    Cancel running analysis (AbortSignal)
+GET    /api/v1/log-analyzer/:id           Get analysis session
 
 GET    /api/v1/audits/:id/scores          Get compliance/efficiency/coverage scores
 GET    /api/v1/audits/org/:orgId/score-trends  Weekly score averages
