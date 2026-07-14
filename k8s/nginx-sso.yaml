@@ -1,0 +1,148 @@
+# ============================================================================
+# nginx-sso.yaml — Nginx SSO Gateway Deployment
+# ============================================================================
+# Deploys Nginx as the edge gateway for SSO-protected internal services.
+# Validates JWTs using the SSO public key, injects plain-text headers,
+# and routes traffic to backend services.
+#
+# Apply:
+#   kubectl apply -f k8s/nginx-sso.yaml
+# ============================================================================
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-sso-config
+  namespace: aigov
+  labels:
+    app.kubernetes.io/part-of: aigov
+    app.kubernetes.io/component: sso-gateway
+data:
+  nginx.conf: |
+    events { worker_connections 1024; }
+    http {
+      auth_jwt_key_file /etc/nginx/sso_public_key.pem;
+
+      server {
+        listen 80;
+
+        # SSO endpoints — no auth required
+        location /oauth/ {
+          proxy_pass http://backend.aigov.svc.cluster.local:3000;
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
+        # Protected routes — JWT validation + header injection
+        location /v1/documents/ {
+          auth_jwt "SSO Gateway";
+          proxy_set_header X-User-Id         $jwt_claim_sub;
+          proxy_set_header X-User-Role       $jwt_claim_role;
+          proxy_set_header X-User-Department $jwt_claim_dept;
+          proxy_set_header Authorization "";
+          proxy_pass http://backend.aigov.svc.cluster.local:3000;
+        }
+
+        location /v1/internal/ {
+          auth_jwt "SSO Gateway";
+          proxy_set_header X-User-Id         $jwt_claim_sub;
+          proxy_set_header X-User-Role       $jwt_claim_role;
+          proxy_set_header X-User-Department $jwt_claim_dept;
+          proxy_set_header Authorization "";
+          proxy_pass http://backend.aigov.svc.cluster.local:3000;
+        }
+      }
+    }
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sso-public-key
+  namespace: aigov
+  labels:
+    app.kubernetes.io/part-of: aigov
+    app.kubernetes.io/component: sso-gateway
+type: Opaque
+stringData:
+  sso_public_key.pem: |
+    # Replace with the output of: openssl rsa -pubout -in private.pem
+    -----BEGIN PUBLIC KEY-----
+    PLACEHOLDER
+    -----END PUBLIC KEY-----
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-sso
+  namespace: aigov
+  labels:
+    app: nginx-sso
+    app.kubernetes.io/part-of: aigov
+    app.kubernetes.io/component: sso-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx-sso
+  template:
+    metadata:
+      labels:
+        app: nginx-sso
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.26-alpine
+          ports:
+            - containerPort: 80
+              name: http
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+            - name: public-key
+              mountPath: /etc/nginx/sso_public_key.pem
+              subPath: sso_public_key.pem
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+          livenessProbe:
+            httpGet:
+              path: /oauth/authorize
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 30
+      volumes:
+        - name: config
+          configMap:
+            name: nginx-sso-config
+        - name: public-key
+          secret:
+            secretName: sso-public-key
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-sso
+  namespace: aigov
+  labels:
+    app: nginx-sso
+    app.kubernetes.io/part-of: aigov
+    app.kubernetes.io/component: sso-gateway
+spec:
+  type: ClusterIP
+  selector:
+    app: nginx-sso
+  ports:
+    - port: 80
+      targetPort: 80
+      name: http

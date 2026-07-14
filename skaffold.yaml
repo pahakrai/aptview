@@ -52,6 +52,7 @@ manifests:
     - k8s/mcp-config.yaml
     - k8s/backend.yaml
     - k8s/frontend.yaml
+    - k8s/nginx-sso.yaml
 
 deploy:
   kubectl: {}

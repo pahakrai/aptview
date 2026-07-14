@@ -2,12 +2,16 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { IoAdapter } from '@nestjs/platform-socket.io';
+import * as cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     rawBody: true, // Required for GitHub webhook HMAC validation
   });
+
+  // Cookie parser (required for SSO session cookies)
+  app.use(cookieParser());
 
   // Global prefix
   app.setGlobalPrefix('api/v1');

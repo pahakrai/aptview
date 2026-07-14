@@ -259,3 +259,52 @@ export const enforcementEvents = pgTable('enforcement_events', {
   changedBy: varchar('changed_by', { length: 255 }).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
+
+// ============================================================================
+// SSO Tables — OAuth 2.0 / OpenID Connect Authorization Server
+// ============================================================================
+
+/**
+ * sso_users — internal user accounts for SSO authentication.
+ */
+export const ssoUsers = pgTable('sso_users', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  email: varchar('email', { length: 255 }).notNull().unique(),
+  passwordHash: varchar('password_hash', { length: 255 }).notNull(),
+  isActive: boolean('is_active').default(true).notNull(),
+  attributes: jsonb('attributes').$type<Record<string, unknown>>().default({}).notNull(),
+  lastLoginAt: timestamp('last_login_at'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+/**
+ * oauth_clients — registered applications authorized to use SSO.
+ */
+export const oauthClients = pgTable('oauth_clients', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  clientId: varchar('client_id', { length: 100 }).notNull().unique(),
+  clientSecretHash: varchar('client_secret_hash', { length: 255 }).notNull(),
+  clientName: varchar('client_name', { length: 255 }).notNull(),
+  allowedRedirectUris: jsonb('allowed_redirect_uris').$type<string[]>().default([]).notNull(),
+  audienceTarget: varchar('audience_target', { length: 255 }),
+  isActive: boolean('is_active').default(true).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+/**
+ * oauth_authorization_codes — single-use codes exchanged for tokens.
+ * Codes expire after 5 minutes.
+ */
+export const oauthAuthorizationCodes = pgTable('oauth_authorization_codes', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  code: varchar('code', { length: 64 }).notNull().unique(),
+  userId: uuid('user_id')
+    .notNull()
+    .references(() => ssoUsers.id, { onDelete: 'cascade' }),
+  clientId: varchar('client_id', { length: 100 }).notNull(),
+  redirectUri: varchar('redirect_uri', { length: 1024 }).notNull(),
+  isUsed: boolean('is_used').default(false).notNull(),
+  expiresAt: timestamp('expires_at').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});

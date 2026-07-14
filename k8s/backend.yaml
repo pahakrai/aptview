@@ -125,6 +125,9 @@ spec:
                 secretKeyRef:
                   name: aigov-secrets
                   key: ANTHROPIC_API_KEY
+            # SSO private key path (mounted from sso-private-key secret)
+            - name: SSO_PRIVATE_KEY_PATH
+              value: /secrets/sso/sso_private.pem
             # -------------------------------------------------------------------
             # MCP Server Configuration (auto-generated from feature flags)
             # The LOG_ANALYZER_MCP_CONFIG JSON is built by the processor from
@@ -176,6 +179,9 @@ spec:
               readOnly: true
             - name: gcp-credentials
               mountPath: /secrets/gcp
+              readOnly: true
+            - name: sso-private-key
+              mountPath: /secrets/sso
               readOnly: true
       # ===================================================================
       # MCP Server Sidecar Containers
@@ -335,6 +341,9 @@ spec:
       #
       # GCP credentials: mount your GCP service account key.
       #   kubectl create secret generic gcp-credentials --from-file=gcp-key.json=./gcp-key.json -n aigov
+      #
+      # SSO private key: mount the RSA key for JWT signing with RS256.
+      #   ./scripts/generate-sso-keys.sh  (creates both sso-private-key and sso-public-key secrets)
       volumes:
         - name: kubeconfig
           secret:
@@ -357,6 +366,13 @@ spec:
             items:
               - key: gcp-key.json
                 path: gcp-key.json
+        - name: sso-private-key
+          secret:
+            secretName: sso-private-key
+            optional: true
+            items:
+              - key: sso_private.pem
+                path: sso_private.pem
       # Allow the backend to reach Docker registry for pulling runner images
       # if using a private registry, add imagePullSecrets here
 
