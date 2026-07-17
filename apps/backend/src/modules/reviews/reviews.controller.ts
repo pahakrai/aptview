@@ -12,10 +12,14 @@ import type { ReviewJobData } from './review.processor';
  *
  * REST endpoints:
  *   POST /api/v1/reviews/start    — Start a review (called by webhook)
- *   POST /api/v1/reviews/:id/approve — Approve and post to GitHub
- *   POST /api/v1/reviews/:id/cancel  — Cancel the review
+ *   POST /api/v1/reviews/:id/action — Approve, cancel, or request revision
  *   GET  /api/v1/reviews/pending     — List pending reviews
  *   GET  /api/v1/reviews/:id         — Get review status + text
+ *
+ * Action payload:
+ *   { action: 'approve', notes?: string }    — Post to GitHub (with optional notes)
+ *   { action: 'revise', feedback: string }   — Re-generate with feedback (max 3 rounds)
+ *   { action: 'cancel' }                     — Discard review
  *
  * WebSocket:
  *   ws://localhost:3000/reviews
@@ -63,31 +67,63 @@ export class ReviewsController implements OnGatewayConnection {
   }
 
   /**
-   * Approve a pending review — resumes the LangGraph to postToGitHub.
+   * Unified HITL action endpoint.
+   *
+   * Body: { action: 'approve' | 'revise' | 'cancel', [notes?: string], [feedback?: string] }
    */
-  @Post(':id/approve')
-  async approve(@Param('id') id: string) {
-    await this.reviewsService.approveReview(id);
+  @Post(':id/action')
+  async handleAction(
+    @Param('id') id: string,
+    @Body() body: { action: string; notes?: string; feedback?: string },
+  ) {
+    switch (body.action) {
+      case 'approve': {
+        await this.reviewsService.approveReview(id, body.notes);
+        this.server.emit('review:status', { threadId: id, status: 'posting' });
+        return {
+          threadId: id,
+          status: 'approved',
+          message: body.notes
+            ? 'Review posting to GitHub with your notes'
+            : 'Review posting to GitHub',
+        };
+      }
 
-    this.server.emit('review:status', { threadId: id, status: 'posting' });
+      case 'revise': {
+        if (!body.feedback || !body.feedback.trim()) {
+          return {
+            threadId: id,
+            status: 'error',
+            message: 'Feedback is required when requesting a revision',
+          };
+        }
+        const { revisionCount, remaining } = await this.reviewsService.reviseReview(id, body.feedback);
+        return {
+          threadId: id,
+          status: 'revising',
+          revisionCount,
+          remaining,
+          message: `Revision ${revisionCount} requested. ${remaining} round(s) remaining.`,
+        };
+      }
 
-    return { threadId: id, status: 'approved', message: 'Review posting to GitHub' };
+      case 'cancel': {
+        await this.reviewsService.cancelReview(id);
+        this.server.emit('review:status', { threadId: id, status: 'cancelled' });
+        return { threadId: id, status: 'cancelled', message: 'Review discarded' };
+      }
+
+      default:
+        return {
+          threadId: id,
+          status: 'error',
+          message: `Unknown action: "${body.action}". Use 'approve', 'revise', or 'cancel'.`,
+        };
+    }
   }
 
   /**
-   * Cancel a pending review — never posts to GitHub.
-   */
-  @Post(':id/cancel')
-  async cancel(@Param('id') id: string) {
-    await this.reviewsService.cancelReview(id);
-
-    this.server.emit('review:status', { threadId: id, status: 'cancelled' });
-
-    return { threadId: id, status: 'cancelled', message: 'Review discarded' };
-  }
-
-  /**
-   * Get a specific review by thread ID.
+   * List all pending reviews (awaiting human approval).
    */
   @Get('pending')
   async listPending() {

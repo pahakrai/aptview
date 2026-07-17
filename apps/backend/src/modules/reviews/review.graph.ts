@@ -1,5 +1,5 @@
 import { StateGraph, END, MemorySaver } from '@langchain/langgraph';
-import { BaseMessage, AIMessage, ToolMessage } from '@langchain/core/messages';
+import { BaseMessage, AIMessage, ToolMessage, HumanMessage } from '@langchain/core/messages';
 import { Annotation } from '@langchain/langgraph';
 
 /**
@@ -31,6 +31,12 @@ export const ReviewState = Annotation.Root({
   }),
   /** Tool call counter — prevents infinite loops */
   toolCallCount: Annotation<number>({ default: () => 0 }),
+  /** Human reviewer's personal notes — appended to the final GitHub post */
+  humanNotes: Annotation<string>({ default: () => '' }),
+  /** Human feedback for re-generation — consumed once, then cleared */
+  humanFeedback: Annotation<string>({ default: () => '' }),
+  /** How many times the human has requested a revision (max 3) */
+  revisionCount: Annotation<number>({ default: () => 0 }),
 });
 
 export type ReviewStateType = typeof ReviewState.State;
@@ -65,12 +71,13 @@ async function fetchDiffNode(state: ReviewStateType): Promise<Partial<ReviewStat
  *
  * Flow:
  *   1. Assembles the prompt from task + standards + diff + repo context
- *   2. Calls DeepSeek API with tool definitions (ReadFile)
- *   3. If the LLM requests a file → fetches it via GitHub API → loops back
- *   4. If the LLM produces final text → saves reviewText → proceeds to interrupt
+ *   2. If humanFeedback is present, injects it as a user message (consumed once)
+ *   3. Calls DeepSeek API with tool definitions (ReadFile)
+ *   4. If the LLM requests a file → fetches it via GitHub API → loops back
+ *   5. If the LLM produces final text → saves reviewText → sets awaiting_approval
  */
 async function generateReviewNode(state: ReviewStateType): Promise<Partial<ReviewStateType>> {
-  console.log(`[LangGraph] generateReview: PR #${state.prNumber}, turn ${state.toolCallCount}`);
+  console.log(`[LangGraph] generateReview: PR #${state.prNumber}, turn ${state.toolCallCount}, revision ${state.revisionCount}`);
 
   // Build the system prompt (same every turn)
   const repoContextBlock = state.repoContext
@@ -84,6 +91,22 @@ async function generateReviewNode(state: ReviewStateType): Promise<Partial<Revie
     'After reading files, produce a final review in markdown.',
   ].join('\n');
 
+  // -----------------------------------------------------------------------
+  // If human feedback is present, add a direction block before the diff
+  // -----------------------------------------------------------------------
+  const feedbackBlock = state.humanFeedback
+    ? [
+        '',
+        '## Reviewer Feedback',
+        'The human reviewer has requested the following changes or additional analysis:',
+        '',
+        state.humanFeedback,
+        '',
+        'Please address this feedback in your revised review. Focus on the areas mentioned.',
+        '',
+      ].join('\n')
+    : '';
+
   const userPrompt = [
     '## Task Description',
     state.taskDescription || '(No task description)',
@@ -96,6 +119,7 @@ async function generateReviewNode(state: ReviewStateType): Promise<Partial<Revie
     state.diffContent?.slice(0, 8000) || '(No diff)',
     '```',
     repoContextBlock,
+    feedbackBlock,
     '',
     '## Instructions',
     '1. If you need to see a file, use the ReadFile tool with the file path.',
@@ -217,6 +241,8 @@ async function generateReviewNode(state: ReviewStateType): Promise<Partial<Revie
         messages: newMessages,
         toolCallCount: state.toolCallCount + 1,
         status: 'reviewing',
+        // Consume humanFeedback so it's only used once (on the first call of this revision)
+        humanFeedback: '',
       };
     }
 
@@ -230,6 +256,8 @@ async function generateReviewNode(state: ReviewStateType): Promise<Partial<Revie
       reviewText,
       status: 'awaiting_approval',
       messages: [new AIMessage(reviewText)],
+      // Consume humanFeedback on final response too (should already be empty if tool calls happened)
+      humanFeedback: '',
     };
   } catch (err) {
     console.error('[LangGraph] generateReview error:', err);
@@ -237,6 +265,7 @@ async function generateReviewNode(state: ReviewStateType): Promise<Partial<Revie
       reviewText: `## Review Error\n\nFailed to generate review: ${(err as Error).message}`,
       status: 'awaiting_approval',
       error: (err as Error).message,
+      humanFeedback: '',
     };
   }
 }
@@ -267,7 +296,21 @@ async function fetchFileContent(
 }
 
 /**
- * Node 3: postToGitHub
+ * Node 3: humanGate — interrupt point for HITL decision.
+ *
+ * This is a pass-through node. The graph pauses BEFORE this node runs.
+ * While paused, the human can modify checkpoint state (humanFeedback, humanNotes,
+ * status) via the controller. When resumed, this node returns {} and the
+ * conditional edge routes based on the (potentially modified) status.
+ */
+async function humanGateNode(state: ReviewStateType): Promise<Partial<ReviewStateType>> {
+  console.log(`[LangGraph] humanGate: PR #${state.prNumber}, status=${state.status}, revision ${state.revisionCount}`);
+  return {};
+}
+
+/**
+ * Node 4: postToGitHub — stub that marks the review as done.
+ * The actual GitHub post happens in ReviewProcessor.processPostJob.
  */
 async function postToGitHubNode(state: ReviewStateType): Promise<Partial<ReviewStateType>> {
   console.log(`[LangGraph] postToGitHub: posting review for PR #${state.prNumber}`);
@@ -278,10 +321,26 @@ async function postToGitHubNode(state: ReviewStateType): Promise<Partial<ReviewS
 // Conditional routing
 // ============================================================================
 
-/** Determine next node after generateReview: loop back if still reviewing, proceed if done */
+/** Determine next node after humanGate: based on the current status */
+function afterHumanGate(state: ReviewStateType): string {
+  switch (state.status) {
+    case 'reviewing':
+      // Human requested revision — loop back to generateReview
+      return 'generateReview';
+    case 'awaiting_approval':
+      // First-time generation complete, or revision complete — proceed
+      return 'postToGitHub';
+    case 'cancelled':
+      return 'END';
+    default:
+      return 'postToGitHub';
+  }
+}
+
+/** Determine next node after generateReview: loop back if still in tool-calling phase */
 function afterGenerateReview(state: ReviewStateType): string {
   if (state.status === 'reviewing') return 'generateReview';
-  return 'postToGitHub';
+  return 'humanGate';
 }
 
 // ============================================================================
@@ -294,17 +353,23 @@ export function buildReviewGraph() {
   const graph = new StateGraph(ReviewState)
     .addNode('fetchDiff', fetchDiffNode)
     .addNode('generateReview', generateReviewNode)
+    .addNode('humanGate', humanGateNode)
     .addNode('postToGitHub', postToGitHubNode)
     .addEdge('__start__', 'fetchDiff')
     .addEdge('fetchDiff', 'generateReview')
     .addConditionalEdges('generateReview', afterGenerateReview, {
       generateReview: 'generateReview',
+      humanGate: 'humanGate',
+    })
+    .addConditionalEdges('humanGate', afterHumanGate, {
+      generateReview: 'generateReview',
       postToGitHub: 'postToGitHub',
+      END: END,
     })
     .addEdge('postToGitHub', END);
 
   return graph.compile({
-    interruptBefore: ['postToGitHub'],
+    interruptBefore: ['humanGate'],
     checkpointer,
   });
 }

@@ -2,11 +2,17 @@
  * review-gate.js — HITL review panel logic
  *
  * Shows all repos and branches under review in a clickable list.
- * Click any review to load it into the monitor. Approve/cancel applies
- * to the currently selected review.
+ * Click any review to load it into the monitor. Approve, cancel, or
+ * request revisions from the reviewer controls panel.
+ *
+ * Actions:
+ *   Approve  → Posts AI review + personal notes to GitHub
+ *   Revise   → Sends feedback to LLM for re-generation (max 3 rounds)
+ *   Cancel   → Discards the review
  */
 
 const API_BASE = 'http://localhost:3000/api/v1';
+const MAX_REVISIONS = 3;
 let currentThreadId = null;
 let allReviews = [];           // All pending reviews from the server
 let socket = null;
@@ -83,6 +89,7 @@ function connectWebSocket() {
         author: data.author,
         reviewText: '',
         status: 'reviewing',
+        revisionCount: 0,
         createdAt: new Date().toISOString(),
       });
     }
@@ -107,6 +114,7 @@ function connectWebSocket() {
     if (r) {
       r.reviewText = data.reviewText || '';
       r.status = 'awaiting_approval';
+      r.revisionCount = data.revisionCount || r.revisionCount || 0;
     }
     if (data.threadId === currentThreadId) updateGate('awaiting_approval');
     renderReviewList();
@@ -114,7 +122,10 @@ function connectWebSocket() {
 
   socket.on('review:status', (data) => {
     const r = allReviews.find((r) => r.threadId === data.threadId);
-    if (r) r.status = data.status;
+    if (r) {
+      r.status = data.status;
+      if (data.revisionCount !== undefined) r.revisionCount = data.revisionCount;
+    }
     if (data.threadId === currentThreadId) updateGate(data.status);
     renderReviewList();
   });
@@ -189,11 +200,12 @@ function renderReviewList() {
     const statusEmoji = r.status === 'awaiting_approval' ? '⏸' :
                         r.status === 'reviewing' ? '◐' :
                         r.status === 'posting' ? '▶' : '';
+    const revBadge = r.revisionCount > 0 ? ` rev${r.revisionCount}` : '';
     return `
       <div class="review-list-item ${isActive ? 'active' : ''}" onclick="event.stopPropagation(); selectReview('${r.threadId}')">
         <span class="repo-name">${r.owner}/${r.repo}</span>
         <span class="branch-info">${r.sourceBranch} → ${r.targetBranch}</span>
-        <span class="pr-badge" style="font-size:10px;">PR #${r.prNumber}</span>
+        <span class="pr-badge" style="font-size:10px;">PR #${r.prNumber}${revBadge}</span>
         <span class="item-status">${statusEmoji} ${r.status}</span>
         <span class="thread-id">${r.threadId.slice(0, 8)}</span>
       </div>
@@ -229,6 +241,10 @@ function selectReview(threadId) {
 
   // Update review pane
   document.getElementById('review-content').textContent = r.reviewText || '';
+
+  // Clear inputs
+  document.getElementById('notes-input').value = '';
+  document.getElementById('feedback-input').value = '';
 
   // Update gate
   updateGate(r.status);
@@ -288,12 +304,28 @@ function updateScore(valueId, barId, value, color) {
 
 async function approveReview() {
   if (!currentThreadId) return;
+
+  const notes = document.getElementById('notes-input')?.value || '';
+  const body = { action: 'approve' };
+  if (notes.trim()) body.notes = notes.trim();
+
   try {
-    await fetch(`${API_BASE}/reviews/${currentThreadId}/approve`, { method: 'POST' });
-    const r = allReviews.find((r) => r.threadId === currentThreadId);
-    if (r) r.status = 'posting';
-    updateGate('posting');
-    renderReviewList();
+    const res = await fetch(`${API_BASE}/reviews/${currentThreadId}/action`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      const r = allReviews.find((r) => r.threadId === currentThreadId);
+      if (r) r.status = 'posting';
+      updateGate('posting');
+      renderReviewList();
+    } else {
+      console.error('Approve failed:', data.message);
+      alert(data.message || 'Failed to approve review');
+    }
   } catch (err) {
     console.error('Approve failed:', err);
   }
@@ -302,22 +334,80 @@ async function approveReview() {
 async function cancelReview() {
   if (!currentThreadId) return;
   try {
-    await fetch(`${API_BASE}/reviews/${currentThreadId}/cancel`, { method: 'POST' });
-    const r = allReviews.find((r) => r.threadId === currentThreadId);
-    if (r) r.status = 'cancelled';
-    updateGate('cancelled');
-    currentThreadId = null;
-    renderReviewList();
-    // Auto-select next review
-    const next = allReviews.find((r) => r.status === 'awaiting_approval');
-    if (next) selectReview(next.threadId);
+    const res = await fetch(`${API_BASE}/reviews/${currentThreadId}/action`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'cancel' }),
+    });
+
+    if (res.ok) {
+      const r = allReviews.find((r) => r.threadId === currentThreadId);
+      if (r) r.status = 'cancelled';
+      updateGate('cancelled');
+      currentThreadId = null;
+      renderReviewList();
+      // Auto-select next review
+      const next = allReviews.find((r) => r.status === 'awaiting_approval');
+      if (next) selectReview(next.threadId);
+    }
   } catch (err) {
     console.error('Cancel failed:', err);
   }
 }
 
-async function triggerReview() {
-  updateGate('reviewing');
+/**
+ * Request a revision — send human feedback to the LLM for re-generation.
+ */
+async function reviseReview() {
+  if (!currentThreadId) return;
+
+  const feedback = document.getElementById('feedback-input')?.value || '';
+  if (!feedback.trim()) {
+    alert('Please enter feedback describing what you want the AI to re-check.');
+    return;
+  }
+
+  const r = allReviews.find((r) => r.threadId === currentThreadId);
+  if (!r) return;
+
+  const currentCount = r.revisionCount || 0;
+  if (currentCount >= MAX_REVISIONS) {
+    alert(`Maximum revision rounds (${MAX_REVISIONS}) reached. Please approve or cancel.`);
+    return;
+  }
+
+  // Disable revise button while in-flight
+  const btnRevise = document.getElementById('btn-revise');
+  btnRevise.disabled = true;
+  btnRevise.textContent = 'Revising...';
+
+  try {
+    const res = await fetch(`${API_BASE}/reviews/${currentThreadId}/action`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'revise', feedback: feedback.trim() }),
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      r.status = 'reviewing';
+      r.revisionCount = data.revisionCount;
+      // Clear feedback input
+      document.getElementById('feedback-input').value = '';
+      // Update UI
+      document.getElementById('review-content').textContent = 'Re-generating review...';
+      updateGate('reviewing');
+      renderReviewList();
+    } else {
+      alert(data.message || 'Failed to request revision');
+      btnRevise.disabled = false;
+      btnRevise.textContent = 'Revise & Re-generate';
+    }
+  } catch (err) {
+    console.error('Revise failed:', err);
+    btnRevise.disabled = false;
+    btnRevise.textContent = 'Revise & Re-generate';
+  }
 }
 
 // ===========================================================================
@@ -328,31 +418,76 @@ function updateGate(status) {
   const statusEl = document.getElementById('decision-status');
   const approveBtn = document.getElementById('btn-approve');
   const cancelBtn = document.getElementById('btn-cancel');
-  const triggerBtn = document.getElementById('btn-trigger');
+  const controls = document.getElementById('reviewer-controls');
+  const badge = document.getElementById('revision-badge');
+  const hint = document.getElementById('revision-hint');
+  const btnRevise = document.getElementById('btn-revise');
+  const feedbackInput = document.getElementById('feedback-input');
 
   approveBtn.disabled = true;
   cancelBtn.disabled = true;
-  triggerBtn.disabled = true;
+  if (controls) controls.classList.remove('visible');
+  if (btnRevise) btnRevise.disabled = true;
+  if (feedbackInput) feedbackInput.disabled = true;
+
+  const r = currentThreadId ? allReviews.find((r) => r.threadId === currentThreadId) : null;
+  const revCount = r?.revisionCount || 0;
+  const remaining = MAX_REVISIONS - revCount;
 
   switch (status) {
     case 'reviewing':
       statusEl.innerHTML = '<div class="status-dot" style="background:#f59e0b;animation:pulse 1s infinite"></div><span>Analyzing code...</span>';
       break;
     case 'awaiting_approval':
-      statusEl.innerHTML = '<div class="status-dot" style="background:#f59e0b;animation:pulse 1s infinite"></div><span>PAUSED: Awaiting Human Approval</span>';
+      if (revCount > 0) {
+        statusEl.innerHTML = `<div class="status-dot" style="background:#f59e0b;animation:pulse 1s infinite"></div><span>PAUSED: Awaiting Human Approval (Revision ${revCount})</span>`;
+      } else {
+        statusEl.innerHTML = '<div class="status-dot" style="background:#f59e0b;animation:pulse 1s infinite"></div><span>PAUSED: Awaiting Human Approval</span>';
+      }
       approveBtn.disabled = false;
       cancelBtn.disabled = false;
+      // Show reviewer controls
+      if (controls) controls.classList.add('visible');
+      // Update revision badge
+      if (badge) {
+        badge.textContent = `${revCount} / ${MAX_REVISIONS}`;
+        if (remaining <= 0) {
+          badge.classList.add('depleted');
+        } else {
+          badge.classList.remove('depleted');
+        }
+      }
+      if (hint) {
+        if (remaining <= 0) {
+          hint.textContent = 'No revision rounds remaining — approve or cancel';
+        } else {
+          hint.textContent = `${remaining} revision round(s) remaining`;
+        }
+      }
+      if (btnRevise) {
+        btnRevise.disabled = remaining <= 0;
+        const label = remaining <= 0
+          ? 'No Revisions Left'
+          : `Revise & Re-generate`;
+        btnRevise.textContent = label;
+      }
+      if (feedbackInput) {
+        feedbackInput.disabled = remaining <= 0;
+        if (remaining <= 0) {
+          feedbackInput.placeholder = 'Maximum revision rounds reached';
+        } else {
+          feedbackInput.placeholder = 'e.g. Check error handling in payment.ts more carefully...';
+        }
+      }
       break;
     case 'posting':
       statusEl.innerHTML = '<div class="status-dot" style="background:#22c55e"></div><span>Posting review to GitHub...</span>';
       break;
     case 'done':
       statusEl.innerHTML = '<div class="status-dot" style="background:#22c55e"></div><span>Review posted ✓</span>';
-      triggerBtn.disabled = false;
       break;
     case 'cancelled':
       statusEl.innerHTML = '<div class="status-dot" style="background:#64748b"></div><span>Review cancelled</span>';
-      triggerBtn.disabled = false;
       break;
     default:
       statusEl.innerHTML = '<div class="status-dot" style="background:#475569"></div><span>No active review</span>';
@@ -401,98 +536,52 @@ async function toggleSettings() {
   const overlay = document.getElementById('settings-overlay');
   if (settingsOpen) {
     overlay.classList.add('open');
-    loadRepositories();
+    await fetchRepos();
   } else {
     overlay.classList.remove('open');
   }
-  // Sync global prefs
-  const modelEl = document.getElementById('config-model');
-  const personaEl = document.getElementById('config-persona');
-  const settingsModel = document.getElementById('settings-model');
-  const settingsPersona = document.getElementById('settings-persona');
-  if (settingsModel && modelEl) settingsModel.value = modelEl.value;
-  if (settingsPersona && personaEl) settingsPersona.value = personaEl.value;
 }
 
-async function loadRepositories() {
-  const container = document.getElementById('repo-list');
+async function fetchRepos() {
   try {
-    const res = await fetch(`${API_BASE}/repositories/org/${orgId}`);
-    const data = await res.json();
-    const repos = Array.isArray(data) ? data : (data.data || []);
-    if (repos.length === 0) {
-      container.innerHTML = '<p style="color:#64748b;font-size:12px;padding:8px 0;">No repositories linked yet.</p>';
-      return;
+    const res = await fetch(`${API_BASE}/repositories?organizationId=${orgId}`);
+    const repos = await res.json();
+    const list = document.getElementById('repo-list');
+    if (Array.isArray(repos) && repos.length > 0) {
+      list.innerHTML = repos.map((r) => `
+        <div class="repo-setting-card">
+          <div class="repo-setting-header">
+            <span class="repo-setting-name">${r.name}</span>
+            <span class="repo-setting-fullname">${r.fullName}</span>
+          </div>
+          <div style="margin-top:6px;">
+            <label style="font-size:10px;color:#64748b;">Target branches:</label>
+            <div class="branch-tags" style="margin-top:4px;" id="branches-${r.id}">
+              ${(r.targetBranches || []).map((b) => `<span class="branch-tag" style="font-size:10px;">${b}</span>`).join('') || '<span style="font-size:10px;color:#475569;">All branches</span>'}
+            </div>
+          </div>
+        </div>
+      `).join('');
+    } else {
+      list.innerHTML = '<p style="color:#475569;font-size:12px;padding:8px 0;">No repositories configured. Link a repo in the dashboard.</p>';
     }
-    container.innerHTML = repos.map((r) => `
-      <div class="repo-setting-card">
-        <div class="repo-setting-header">
-          <span class="repo-setting-name">${r.name}</span>
-          <span class="repo-setting-fullname">${r.fullName}</span>
-        </div>
-        <div class="branch-tags" id="branches-${r.id}">
-          ${(r.reviewBranches || ['dev']).map((b) =>
-            `<span class="branch-tag ${b}">${b} <span class="remove-tag" onclick="removeRepoBranch('${r.id}','${b}')">&times;</span></span>`
-          ).join('')}
-        </div>
-        <div class="branch-add">
-          <input type="text" placeholder="Add branch..." id="input-${r.id}"
-            onkeydown="if(event.key==='Enter')addRepoBranch('${r.id}')">
-          <button onclick="addRepoBranch('${r.id}')">+ Add</button>
-        </div>
-      </div>
-    `).join('');
   } catch {
-    container.innerHTML = '<p style="color:#64748b;font-size:12px;padding:8px 0;">Unable to load repositories.</p>';
+    document.getElementById('repo-list').innerHTML = '<p style="color:#475569;font-size:12px;padding:8px 0;">Failed to load repositories.</p>';
   }
 }
 
-async function addRepoBranch(repoId) {
-  const input = document.getElementById('input-' + repoId);
-  const name = input.value.trim();
-  if (!name) return;
-  input.value = '';
-  // Get current branches, add new one, save
-  const container = document.getElementById('branches-' + repoId);
-  const existing = Array.from(container.querySelectorAll('.branch-tag'))
-    .map((t) => t.textContent.replace('×', '').trim());
-  if (existing.includes(name)) return;
-  existing.push(name);
-  await persistRepoBranches(repoId, existing);
-  loadRepositories();
+async function saveSettings() {
+  const model = document.getElementById('settings-model')?.value || 'deepseek';
+  const persona = document.getElementById('settings-persona')?.value || '';
+  console.log('Settings saved:', { model, persona });
+  toggleSettings();
 }
 
-async function removeRepoBranch(repoId, name) {
-  const container = document.getElementById('branches-' + repoId);
-  const existing = Array.from(container.querySelectorAll('.branch-tag'))
-    .map((t) => t.textContent.replace('×', '').trim())
-    .filter((b) => b !== name);
-  await persistRepoBranches(repoId, existing);
-  loadRepositories();
-}
+// ===========================================================================
+// Initialisation
+// ===========================================================================
 
-async function persistRepoBranches(repoId, branches) {
-  try {
-    await fetch(`${API_BASE}/repositories/${repoId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reviewBranches: branches }),
-    });
-  } catch (err) {
-    console.error('Failed to save branch config:', err);
-  }
-}
-
-// Close settings overlay on Escape
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && settingsOpen) toggleSettings();
-});
-
-// Close review list when clicking outside
-document.addEventListener('click', (e) => {
-  const bar = document.getElementById('activity-bar');
-  const list = document.getElementById('review-list');
-  if (list.classList.contains('open') && !bar.contains(e.target)) {
-    list.classList.remove('open');
-  }
+document.addEventListener('DOMContentLoaded', () => {
+  renderBranches();
+  renderReviewList();
 });

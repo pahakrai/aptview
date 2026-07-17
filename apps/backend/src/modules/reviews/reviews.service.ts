@@ -1,7 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { Redis } from 'ioredis';
 import { randomUUID } from 'crypto';
 import type { ReviewJobData } from './review.processor';
 
@@ -11,6 +10,9 @@ import type { ReviewJobData } from './review.processor';
  * Review state lifecycle:
  *   fetching → reviewing → awaiting_approval → posting → done
  *                                                  ↘ cancelled
+ *
+ * Revision loop:
+ *   awaiting_approval → (revise) → reviewing → awaiting_approval (up to 3 rounds)
  */
 
 export interface PendingReview {
@@ -24,8 +26,12 @@ export interface PendingReview {
   author: string;
   reviewText: string;
   status: 'awaiting_approval' | 'posting' | 'done' | 'cancelled';
+  revisionCount: number;
   createdAt: string;
 }
+
+/** Maximum number of revision rounds the human can request */
+const MAX_REVISIONS = 3;
 
 @Injectable()
 export class ReviewsService {
@@ -58,9 +64,10 @@ export class ReviewsService {
   /**
    * Save a pending review and notify connected WebSocket clients.
    */
-  async savePendingReview(threadId: string, review: Omit<PendingReview, 'threadId' | 'createdAt'>): Promise<void> {
+  async savePendingReview(threadId: string, review: Omit<PendingReview, 'threadId' | 'createdAt' | 'revisionCount'> & { revisionCount?: number }): Promise<void> {
     this.reviews.set(threadId, {
       ...review,
+      revisionCount: review.revisionCount ?? 0,
       threadId,
       createdAt: new Date().toISOString(),
     });
@@ -78,6 +85,7 @@ export class ReviewsService {
         author: review.author,
         reviewText: review.reviewText,
         status: review.status,
+        revisionCount: review.revisionCount ?? 0,
       });
     }
   }
@@ -99,16 +107,52 @@ export class ReviewsService {
   }
 
   /**
-   * Approve a pending review — enqueues the post job.
+   * Request a revision — human provides feedback, LLM re-generates.
+   * Enforces the MAX_REVISIONS cap.
    */
-  async approveReview(threadId: string): Promise<void> {
+  async reviseReview(threadId: string, feedback: string): Promise<{ revisionCount: number; remaining: number }> {
+    const review = this.reviews.get(threadId);
+    if (!review) throw new Error(`Review ${threadId} not found`);
+    if (review.status !== 'awaiting_approval') {
+      throw new Error(`Review ${threadId} is not awaiting approval (current: ${review.status})`);
+    }
+
+    const newCount = review.revisionCount + 1;
+    if (newCount > MAX_REVISIONS) {
+      throw new Error(
+        `Maximum revision rounds (${MAX_REVISIONS}) reached. Please approve or cancel.`,
+      );
+    }
+
+    review.revisionCount = newCount;
+    review.status = 'posting'; // temporary — processor will set back to awaiting_approval
+    this.reviews.set(threadId, review);
+
+    await this.reviewQueue.add('review-revise', { threadId, feedback });
+
+    if (this.webSocketServer) {
+      this.webSocketServer.emit('review:status', {
+        threadId,
+        status: 'reviewing',
+        revisionCount: newCount,
+        remaining: MAX_REVISIONS - newCount,
+      });
+    }
+
+    return { revisionCount: newCount, remaining: MAX_REVISIONS - newCount };
+  }
+
+  /**
+   * Approve a pending review — enqueues the post job with optional human notes.
+   */
+  async approveReview(threadId: string, notes?: string): Promise<void> {
     const review = this.reviews.get(threadId);
     if (!review) throw new Error(`Review ${threadId} not found`);
 
     review.status = 'posting';
     this.reviews.set(threadId, review);
 
-    await this.reviewQueue.add('review-post', { threadId });
+    await this.reviewQueue.add('review-post', { threadId, notes });
   }
 
   /**
