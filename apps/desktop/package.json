@@ -7,14 +7,32 @@
     "start": "electron .",
     "dev": "electron . --dev",
     "build": "electron-builder",
-    "dist": "electron-builder --publish never"
+    "dist": "electron-builder --publish never",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:e2e": "playwright test --config=e2e/playwright.config.ts",
+    "test:all": "jest && playwright test --config=e2e/playwright.config.ts"
   },
   "dependencies": {
     "socket.io-client": "^4.7.0"
   },
   "devDependencies": {
     "electron": "^30.0.0",
-    "electron-builder": "^24.0.0"
+    "electron-builder": "^24.0.0",
+    "jest": "^30.0.0",
+    "jest-environment-jsdom": "^30.0.0",
+    "@playwright/test": "^1.42.0"
+  },
+  "jest": {
+    "testEnvironment": "jsdom",
+    "testMatch": [
+      "**/__tests__/**/*.test.js",
+      "**/__tests__/**/*.spec.js",
+      "**/*.spec.js"
+    ],
+    "roots": ["src", "."],
+    "transform": {},
+    "setupFiles": ["<rootDir>/src/__tests__/setup.js"]
   },
   "build": {
     "appId": "com.aigov.desktop",

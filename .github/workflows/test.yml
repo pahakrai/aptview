@@ -1,0 +1,98 @@
+# ============================================================================
+# Test Pipeline — Runs on every PR to catch regressions before merge.
+#
+# Three tiers:
+#   1. Backend unit + integration tests (NestJS controller, service)
+#   2. Desktop unit tests (gate state machine, DOM logic)
+#   3. Desktop E2E smoke test (Electron + Playwright in headless mode)
+#
+# All run on the same Ubuntu runner. xvfb provides a virtual display
+# for the Electron E2E test.
+# ============================================================================
+
+name: Test Pipeline
+
+on:
+  pull_request:
+    paths:
+      - 'apps/backend/**'
+      - 'apps/desktop/**'
+      - 'libs/**'
+      - 'package.json'
+      - 'yarn.lock'
+  push:
+    branches: [main, dev]
+  workflow_dispatch:
+
+jobs:
+  backend-tests:
+    name: Backend Unit + Integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'yarn'
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Build shared libs
+        run: |
+          yarn workspace @aigov/shared-types build
+          yarn workspace @aigov/database-client build
+          yarn workspace @aigov/utils build
+
+      - name: Run backend tests
+        run: yarn workspace backend test --passWithNoTests
+
+  desktop-unit:
+    name: Desktop Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'yarn'
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Run desktop unit tests
+        run: yarn workspace aigov-desktop test
+
+  desktop-e2e:
+    name: Desktop E2E Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'yarn'
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+
+      - name: Run E2E smoke test
+        run: |
+          cd apps/desktop
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x960x24" \
+            npx playwright test --config=e2e/playwright.config.ts

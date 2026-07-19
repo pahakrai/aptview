@@ -12,7 +12,9 @@
     "db:seed": "tsx src/database/seed.ts",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
-    "lint": "eslint \"{src,test}/**/*.ts\""
+    "lint": "eslint \"{src,test}/**/*.ts\"",
+    "test": "jest",
+    "test:watch": "jest --watch"
   },
   "dependencies": {
     "@aigov/database-client": "*",
