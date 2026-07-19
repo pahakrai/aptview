@@ -259,6 +259,20 @@
       <span class="hint">Added to the review before posting to GitHub</span>
     </div>
     <textarea id="notes-input" class="reviewer-textarea" placeholder="Add context or observations the AI might have missed..."></textarea>
+    <div class="reviewer-row" style="padding:8px 0;border-top:1px solid #1e293b;border-bottom:1px solid #1e293b;">
+      <label>Generate Tests (optional)</label>
+      <span class="hint" id="test-hint">Tests will be generated, reviewed by AI, and posted for your approval</span>
+    </div>
+    <div class="reviewer-row" style="gap:20px;">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none;font-weight:400;font-size:12px;">
+        <input type="checkbox" id="test-unit" onchange="updateTestSelection()">
+        Write unit tests
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none;font-weight:400;font-size:12px;">
+        <input type="checkbox" id="test-integration" onchange="updateTestSelection()">
+        Write integration tests
+      </label>
+    </div>
     <div class="reviewer-row">
       <label>Request Changes</label>
       <span class="revision-badge" id="revision-badge">0 / 3</span>

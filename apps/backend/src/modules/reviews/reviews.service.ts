@@ -13,6 +13,9 @@ import type { ReviewJobData } from './review.processor';
  *
  * Revision loop:
  *   awaiting_approval → (revise) → reviewing → awaiting_approval (up to 3 rounds)
+ *
+ * Test generation (Phase 2):
+ *   done (code review) → generating → reviewing_tests → awaiting_approval → posting → done
  */
 
 export interface PendingReview {
@@ -30,41 +33,54 @@ export interface PendingReview {
   createdAt: string;
 }
 
-/** Maximum number of revision rounds the human can request */
+export interface PendingTestReview {
+  threadId: string;
+  prNumber: number;
+  prTitle: string;
+  owner: string;
+  repo: string;
+  sourceBranch: string;
+  targetBranch: string;
+  author: string;
+  generatedTestsContent: string;
+  testReviewText: string;
+  testTypes: string[];
+  status: 'awaiting_approval' | 'posting' | 'done' | 'cancelled';
+  createdAt: string;
+}
+
 const MAX_REVISIONS = 3;
 
 @Injectable()
 export class ReviewsService {
   private readonly reviews = new Map<string, PendingReview>();
+  private readonly testReviews = new Map<string, PendingTestReview>();
   private webSocketServer: { emit: (event: string, data: unknown) => void } | null = null;
 
   constructor(
     @InjectQueue('reviews') private readonly reviewQueue: Queue,
   ) {}
 
-  /** Set the WebSocket server reference (called by controller on init) */
   setServer(server: { emit: (event: string, data: unknown) => void }) {
     this.webSocketServer = server;
   }
 
   /**
-   * Enqueue a review analysis job. Returns immediately — the review runs async.
+   * Enqueue a review analysis job.
    */
   async startReview(data: Omit<ReviewJobData, 'threadId'>): Promise<{ threadId: string }> {
     const threadId = randomUUID();
-
-    await this.reviewQueue.add('review-analyze', {
-      ...data,
-      threadId,
-    });
-
+    await this.reviewQueue.add('review-analyze', { ...data, threadId });
     return { threadId };
   }
 
   /**
-   * Save a pending review and notify connected WebSocket clients.
+   * Save a pending code review and notify WebSocket clients.
    */
-  async savePendingReview(threadId: string, review: Omit<PendingReview, 'threadId' | 'createdAt' | 'revisionCount'> & { revisionCount?: number }): Promise<void> {
+  async savePendingReview(
+    threadId: string,
+    review: Omit<PendingReview, 'threadId' | 'createdAt' | 'revisionCount'> & { revisionCount?: number },
+  ): Promise<void> {
     this.reviews.set(threadId, {
       ...review,
       revisionCount: review.revisionCount ?? 0,
@@ -72,7 +88,6 @@ export class ReviewsService {
       createdAt: new Date().toISOString(),
     });
 
-    // Notify connected desktop app clients via WebSocket
     if (this.webSocketServer) {
       this.webSocketServer.emit('review:complete', {
         threadId,
@@ -91,24 +106,56 @@ export class ReviewsService {
   }
 
   /**
-   * Get a pending review by thread ID.
+   * Save a pending test review (Phase 2) and notify clients.
    */
+  async savePendingTestReview(
+    threadId: string,
+    review: Omit<PendingTestReview, 'threadId' | 'createdAt'>,
+  ): Promise<void> {
+    this.testReviews.set(threadId, {
+      ...review,
+      threadId,
+      createdAt: new Date().toISOString(),
+    });
+
+    if (this.webSocketServer) {
+      this.webSocketServer.emit('review:complete', {
+        threadId,
+        prNumber: review.prNumber,
+        prTitle: review.prTitle,
+        owner: review.owner,
+        repo: review.repo,
+        phase: 'tests',
+        generatedTestsContent: review.generatedTestsContent,
+        testReviewText: review.testReviewText,
+        testTypes: review.testTypes,
+        status: review.status,
+      });
+    }
+  }
+
   async getReview(threadId: string): Promise<PendingReview | null> {
     return this.reviews.get(threadId) || null;
   }
 
-  /**
-   * List all pending reviews (awaiting human approval).
-   */
+  async getTestReview(threadId: string): Promise<PendingTestReview | null> {
+    return this.testReviews.get(threadId) || null;
+  }
+
   async listPending(): Promise<PendingReview[]> {
     return Array.from(this.reviews.values())
       .filter((r) => r.status === 'awaiting_approval')
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
+  async listPendingTestReviews(): Promise<PendingTestReview[]> {
+    return Array.from(this.testReviews.values())
+      .filter((r) => r.status === 'awaiting_approval')
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
   /**
-   * Request a revision — human provides feedback, LLM re-generates.
-   * Enforces the MAX_REVISIONS cap.
+   * Request a code review revision.
    */
   async reviseReview(threadId: string, feedback: string): Promise<{ revisionCount: number; remaining: number }> {
     const review = this.reviews.get(threadId);
@@ -119,23 +166,18 @@ export class ReviewsService {
 
     const newCount = review.revisionCount + 1;
     if (newCount > MAX_REVISIONS) {
-      throw new Error(
-        `Maximum revision rounds (${MAX_REVISIONS}) reached. Please approve or cancel.`,
-      );
+      throw new Error(`Maximum revision rounds (${MAX_REVISIONS}) reached. Please approve or cancel.`);
     }
 
     review.revisionCount = newCount;
-    review.status = 'posting'; // temporary — processor will set back to awaiting_approval
+    review.status = 'posting';
     this.reviews.set(threadId, review);
 
     await this.reviewQueue.add('review-revise', { threadId, feedback });
 
     if (this.webSocketServer) {
       this.webSocketServer.emit('review:status', {
-        threadId,
-        status: 'reviewing',
-        revisionCount: newCount,
-        remaining: MAX_REVISIONS - newCount,
+        threadId, status: 'reviewing', revisionCount: newCount, remaining: MAX_REVISIONS - newCount,
       });
     }
 
@@ -143,37 +185,62 @@ export class ReviewsService {
   }
 
   /**
-   * Approve a pending review — enqueues the post job with optional human notes.
+   * Approve code review. Optionally triggers Phase 2 test generation.
    */
-  async approveReview(threadId: string, notes?: string): Promise<void> {
+  async approveReview(
+    threadId: string,
+    notes?: string,
+    generateTests?: boolean,
+    testTypes?: string[],
+  ): Promise<void> {
     const review = this.reviews.get(threadId);
     if (!review) throw new Error(`Review ${threadId} not found`);
 
     review.status = 'posting';
     this.reviews.set(threadId, review);
 
-    await this.reviewQueue.add('review-post', { threadId, notes });
+    await this.reviewQueue.add('review-post', { threadId, notes, generateTests, testTypes });
   }
 
   /**
-   * Cancel a pending review — marks as cancelled, never posts to GitHub.
+   * Approve generated tests (Phase 2) — post to GitHub.
    */
+  async approveTestsReview(threadId: string): Promise<void> {
+    const review = this.testReviews.get(threadId);
+    if (!review) throw new Error(`Test review ${threadId} not found`);
+
+    review.status = 'posting';
+    this.testReviews.set(threadId, review);
+
+    await this.reviewQueue.add('test-post', { threadId });
+
+    if (this.webSocketServer) {
+      this.webSocketServer.emit('review:status', { threadId, status: 'posting', phase: 'tests' });
+    }
+  }
+
   async cancelReview(threadId: string): Promise<void> {
     const review = this.reviews.get(threadId);
     if (!review) throw new Error(`Review ${threadId} not found`);
-
     review.status = 'cancelled';
     this.reviews.set(threadId, review);
   }
 
   /**
-   * Update the status of a review.
+   * Cancel a pending test review.
    */
+  async cancelTestReview(threadId: string): Promise<void> {
+    const review = this.testReviews.get(threadId);
+    if (!review) throw new Error(`Test review ${threadId} not found`);
+    review.status = 'cancelled';
+    this.testReviews.set(threadId, review);
+  }
+
   async updateReviewStatus(threadId: string, status: PendingReview['status']): Promise<void> {
-    const review = this.reviews.get(threadId);
-    if (review) {
-      review.status = status;
-      this.reviews.set(threadId, review);
+    const review = this.reviews.get(threadId) || this.testReviews.get(threadId);
+    if (review && 'status' in review) {
+      (review as PendingReview).status = status as PendingReview['status'];
+      if (this.reviews.has(threadId)) this.reviews.set(threadId, review as PendingReview);
     }
   }
 }

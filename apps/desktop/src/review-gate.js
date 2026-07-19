@@ -106,6 +106,27 @@ function connectWebSocket() {
   });
 
   socket.on('review:complete', (data) => {
+    // Phase 2: test review completed
+    if (data.phase === 'tests') {
+      const r = allReviews.find((r) => r.threadId === data.threadId);
+      if (r) {
+        r.generatedTestsContent = data.generatedTestsContent || '';
+        r.testReviewText = data.testReviewText || '';
+        r.testTypes = data.testTypes || [];
+        r.testPhase = 'awaiting_approval';
+      }
+      if (data.threadId === currentThreadId) {
+        // Show test results in the review pane
+        document.getElementById('review-content').textContent =
+          (data.testReviewText || 'No test review') + '\n\n' +
+          '```\n' + (data.generatedTestsContent || '') + '\n```';
+        updateGate('awaiting_test_approval');
+      }
+      renderReviewList();
+      return;
+    }
+
+    // Phase 1: code review completed
     const el = document.getElementById('review-content');
     if (!el.textContent || el.textContent === 'Fetching diff...') {
       el.textContent = data.reviewText || '';
@@ -190,23 +211,29 @@ function renderReviewList() {
   const countEl = document.getElementById('review-count');
   const countSmall = document.getElementById('review-count-small');
 
-  const pending = allReviews.filter((r) => r.status !== 'done' && r.status !== 'cancelled');
+  const pending = allReviews.filter((r) =>
+    r.status !== 'done' && r.status !== 'cancelled'
+  );
 
   if (countEl) countEl.textContent = pending.length > 0 ? `${pending.length} review(s)` : '';
   if (countSmall) countSmall.textContent = pending.length > 1 ? `+${pending.length - 1} more` : '';
 
   list.innerHTML = pending.map((r) => {
     const isActive = r.threadId === currentThreadId;
-    const statusEmoji = r.status === 'awaiting_approval' ? '⏸' :
+    const isTestPhase = r.testPhase === 'awaiting_approval';
+    const statusEmoji = isTestPhase ? '🧪' :
+                        r.status === 'awaiting_approval' ? '⏸' :
                         r.status === 'reviewing' ? '◐' :
                         r.status === 'posting' ? '▶' : '';
+    const statusText = isTestPhase ? 'tests pending' : r.status;
     const revBadge = r.revisionCount > 0 ? ` rev${r.revisionCount}` : '';
+    const testBadge = isTestPhase ? ` ${(r.testTypes || []).join('+')}` : '';
     return `
       <div class="review-list-item ${isActive ? 'active' : ''}" onclick="event.stopPropagation(); selectReview('${r.threadId}')">
         <span class="repo-name">${r.owner}/${r.repo}</span>
         <span class="branch-info">${r.sourceBranch} → ${r.targetBranch}</span>
-        <span class="pr-badge" style="font-size:10px;">PR #${r.prNumber}${revBadge}</span>
-        <span class="item-status">${statusEmoji} ${r.status}</span>
+        <span class="pr-badge" style="font-size:10px;">PR #${r.prNumber}${revBadge}${testBadge}</span>
+        <span class="item-status">${statusEmoji} ${statusText}</span>
         <span class="thread-id">${r.threadId.slice(0, 8)}</span>
       </div>
     `;
@@ -245,9 +272,19 @@ function selectReview(threadId) {
   // Clear inputs
   document.getElementById('notes-input').value = '';
   document.getElementById('feedback-input').value = '';
+  // Clear test checkboxes
+  const unitCb = document.getElementById('test-unit');
+  const intCb = document.getElementById('test-integration');
+  if (unitCb) unitCb.checked = false;
+  if (intCb) intCb.checked = false;
+  updateTestSelection();
 
-  // Update gate
-  updateGate(r.status);
+  // If this review has a pending test phase, show it
+  if (r.testPhase === 'awaiting_approval') {
+    updateGate('awaiting_test_approval');
+  } else {
+    updateGate(r.status);
+  }
 
   // Fetch scores for this PR
   fetchScores(r.owner, r.repo, r.prNumber);
@@ -302,12 +339,34 @@ function updateScore(valueId, barId, value, color) {
 // Actions
 // ===========================================================================
 
+function getSelectedTestTypes() {
+  const types = [];
+  if (document.getElementById('test-unit')?.checked) types.push('unit');
+  if (document.getElementById('test-integration')?.checked) types.push('integration');
+  return types;
+}
+
+function updateTestSelection() {
+  const types = getSelectedTestTypes();
+  const hint = document.getElementById('test-hint');
+  if (hint) {
+    hint.textContent = types.length > 0
+      ? `Will generate: ${types.join(' and ')} tests`
+      : 'Tests will be generated, reviewed by AI, and posted for your approval';
+  }
+}
+
 async function approveReview() {
   if (!currentThreadId) return;
 
   const notes = document.getElementById('notes-input')?.value || '';
+  const testTypes = getSelectedTestTypes();
   const body = { action: 'approve' };
   if (notes.trim()) body.notes = notes.trim();
+  if (testTypes.length > 0) {
+    body.generateTests = true;
+    body.testTypes = testTypes;
+  }
 
   try {
     const res = await fetch(`${API_BASE}/reviews/${currentThreadId}/action`, {
@@ -320,6 +379,9 @@ async function approveReview() {
     if (res.ok) {
       const r = allReviews.find((r) => r.threadId === currentThreadId);
       if (r) r.status = 'posting';
+      if (data.phase === 'tests_pending') {
+        // Phase 2 will follow — UI already handled by WS events
+      }
       updateGate('posting');
       renderReviewList();
     } else {
@@ -328,6 +390,45 @@ async function approveReview() {
     }
   } catch (err) {
     console.error('Approve failed:', err);
+  }
+}
+
+async function approveTestsReview() {
+  if (!currentThreadId) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/reviews/${currentThreadId}/action`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'approve-tests' }),
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      updateGate('posting');
+    } else {
+      alert(data.message || 'Failed to approve tests');
+    }
+  } catch (err) {
+    console.error('Approve tests failed:', err);
+  }
+}
+
+async function cancelTestReview() {
+  if (!currentThreadId) return;
+  try {
+    await fetch(`${API_BASE}/reviews/${currentThreadId}/action`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'cancel-tests' }),
+    });
+    const r = allReviews.find((r) => r.threadId === currentThreadId);
+    if (r) { r.testPhase = undefined; r.generatedTestsContent = ''; r.testReviewText = ''; }
+    // Revert to code review view
+    document.getElementById('review-content').textContent = r?.reviewText || '';
+    updateGate(r?.status || 'awaiting_approval');
+  } catch (err) {
+    console.error('Cancel tests failed:', err);
   }
 }
 
@@ -480,8 +581,24 @@ function updateGate(status) {
         }
       }
       break;
+    case 'awaiting_test_approval':
+      statusEl.innerHTML = '<div class="status-dot" style="background:#8b5cf6;animation:pulse 1s infinite"></div><span>PAUSED: Review Generated Tests</span>';
+      approveBtn.disabled = false;
+      approveBtn.textContent = 'Approve Tests & Comment';
+      cancelBtn.disabled = false;
+      cancelBtn.textContent = 'Discard Tests';
+      approveBtn.onclick = approveTestsReview;
+      cancelBtn.onclick = cancelTestReview;
+      // Hide code review controls, show test review
+      if (controls) controls.classList.remove('visible');
+      break;
     case 'posting':
       statusEl.innerHTML = '<div class="status-dot" style="background:#22c55e"></div><span>Posting review to GitHub...</span>';
+      // Restore button state after test approval posting
+      approveBtn.textContent = 'Approve & Comment';
+      cancelBtn.textContent = 'Cancel Review';
+      approveBtn.onclick = approveReview;
+      cancelBtn.onclick = cancelReview;
       break;
     case 'done':
       statusEl.innerHTML = '<div class="status-dot" style="background:#22c55e"></div><span>Review posted ✓</span>';
