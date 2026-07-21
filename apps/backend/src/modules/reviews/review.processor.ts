@@ -253,7 +253,11 @@ export class ReviewProcessor extends WorkerHost {
   }
 
   /**
-   * Job 4 (test-post): Human approves generated tests — post to GitHub.
+   * Job 4 (test-post): Human approves generated tests.
+   *
+   * Commits the test file to the PR branch so CI (test.yml) runs it.
+   * The PR is blocked from merging until the generated tests pass.
+   * Posts a summary comment with the test review text for human reference.
    */
   private async processTestPostJob(job: Job<TestPostJobData>): Promise<{ threadId: string; status: string }> {
     const { threadId } = job.data;
@@ -272,33 +276,105 @@ export class ReviewProcessor extends WorkerHost {
 
     const reviewState = state.values as ReviewStateType;
 
-    // Post test review to GitHub
-    const testBody = [
-      '## Generated Tests',
+    const testContent = reviewState.generatedTestsContent || '';
+    if (!testContent.trim()) {
+      console.warn(`[ReviewProcessor] No test content to commit for thread ${threadId}`);
+      const result = await graph.invoke(null, config);
+      await this.reviewsService.updateReviewStatus(threadId, 'done');
+      return { threadId, status: 'done' };
+    }
+
+    // Derive test file path from the PR's changed files.
+    // Falls back to a pr-numbered path if no source files found.
+    const testPath = this.deriveTestPath(
+      reviewState.repoContext || '',
+      reviewState.prNumber!,
+    );
+
+    // Commit the test file to the PR branch — this triggers CI
+    await this.reviewCommenter.commitFileToBranch({
+      owner: reviewState.owner!,
+      repo: reviewState.repo!,
+      path: testPath,
+      content: testContent,
+      branch: reviewState.sourceBranch!,
+      message: `test: AI-generated ${(reviewState.testTypes || ['test']).join('/')} tests for PR #${reviewState.prNumber}`,
+    });
+
+    // Post a summary comment so the human sees the test review + CI link
+    const summaryBody = [
+      `## ✅ AI-Generated Tests Committed`,
       '',
-      `Test types: ${(reviewState.testTypes || []).join(', ')}`,
+      `**File:** \`${testPath}\``,
+      `**Types:** ${(reviewState.testTypes || []).join(', ') || 'test'}`,
       '',
-      '```typescript',
-      reviewState.generatedTestsContent || '// No tests generated',
-      '```',
+      `CI is running the generated tests. [View checks](https://github.com/${reviewState.owner}/${reviewState.repo}/pull/${reviewState.prNumber}/checks)`,
       '',
       '---',
       '',
-      reviewState.testReviewText || 'No test review',
+      '### Test Review',
+      '',
+      reviewState.testReviewText || 'No test review generated.',
+      '',
+      '<details><summary>Generated test code</summary>',
+      '',
+      '```typescript',
+      testContent.slice(0, 8000),
+      testContent.length > 8000 ? '\n// ... (truncated, see committed file for full content)' : '',
+      '```',
+      '',
+      '</details>',
     ].join('\n');
 
     await this.reviewCommenter.postComment(
       reviewState.owner!,
       reviewState.repo!,
       reviewState.prNumber!,
-      testBody,
+      summaryBody,
     );
 
     // Resume graph to completion
     const result = await graph.invoke(null, config);
     await this.reviewsService.updateReviewStatus(threadId, 'done');
 
-    console.log(`[ReviewProcessor] test-post complete: thread ${threadId}`);
+    console.log(`[ReviewProcessor] test-post complete: ${testPath} committed to ${reviewState.sourceBranch}, thread ${threadId}`);
     return { threadId, status: 'done' };
+  }
+
+  /**
+   * Derive a test file path from the PR's changed files.
+   *
+   * Parses the repoContext file listing (e.g. "  M  src/auth/login.ts")
+   * and maps the first source file to a test path:
+   *   src/auth/login.ts  →  src/auth/__tests__/login.test.ts
+   *
+   * Falls back to: src/__tests__/ai-generated-pr-{number}.test.ts
+   */
+  private deriveTestPath(repoContext: string, prNumber: number): string {
+    // Extract changed file paths from repoContext listing
+    // Format: "  M  src/auth/login.ts" or "  A  src/utils/new.ts"
+    const filePattern = /^\s*[MAD]\s+(.+)$/gm;
+    const matches = [...repoContext.matchAll(filePattern)];
+
+    for (const match of matches) {
+      const filePath = match[1].trim();
+      // Skip files that are already tests
+      if (filePath.match(/\.(test|spec)\.(ts|js|tsx|jsx)$/)) continue;
+      if (filePath.includes('__tests__')) continue;
+      if (filePath.match(/\.(test|spec)\./)) continue;
+
+      // Map source file to test file path
+      // src/auth/login.ts → src/auth/__tests__/login.test.ts
+      const dir = filePath.substring(0, filePath.lastIndexOf('/'));
+      const fileName = filePath.substring(filePath.lastIndexOf('/') + 1);
+      const baseName = fileName.replace(/\.(ts|js|tsx|jsx)$/, '');
+      const ext = fileName.endsWith('.tsx') ? '.tsx' : fileName.endsWith('.jsx') ? '.jsx' : '.ts';
+
+      return `${dir}/__tests__/${baseName}.test${ext}`;
+    }
+
+    // Fallback: place in backend workspace (monorepo default)
+    // test.yml watches apps/backend/** so the file must be under that tree
+    return `apps/backend/src/__tests__/ai-generated-pr-${prNumber}.test.ts`;
   }
 }

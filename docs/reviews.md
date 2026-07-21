@@ -42,16 +42,27 @@ Phase 1: Code Review (always runs)
               ┌────────┴────────┐
               │                 │
               ▼                 ▼
-Phase 2:  generateTests       END
-              │
-              ▼
-         reviewTests
-              │
-              ▼
-         testHumanGate ✋
-              │
-              ▼
-         postTestComment → END
+ Phase 2:  generateTests       END
+               │
+               ▼
+          reviewTests
+               │
+               ▼
+          testHumanGate ✋
+               │
+      ┌────────┴────────┐
+      │                 │
+      ▼                 ▼
+  Approve Tests     Discard Tests
+      │
+      ▼
+  commitFileToBranch → PR branch
+      │
+      ▼
+  GitHub Actions → test.yml
+      │
+      ├─ ✅ → merge
+      └─ ❌ → fix → re-run → merge
 ```
 
 ## LangGraph State Machine
@@ -74,9 +85,11 @@ graph TD
     GT -- "still fetching" --> GT
     GT -- "done" --> RT[reviewTests]
     RT --> THG[testHumanGate ✋]
-    THG -- "approve" --> PTC[postTestComment]
+    THG -- "approve" --> CF[commitFileToBranch]
     THG -- "cancel" --> END3[END]
-    PTC --> END4[END]
+    CF --> CI[GitHub Actions CI]
+    CI -- "pass" --> END4[END]
+    CI -- "fail" --> FIX[Fix tests → re-run]
 ```
 
 ### State Definition
@@ -170,8 +183,9 @@ Produces `testReviewText` and sets `testStatus = 'awaiting_approval'`.
 LangGraph pauses before this node. The human sees generated test code + AI
 review and approves or discards.
 
-**postTestComment** — Stub node. Sets `testStatus = 'done'`. Actual posting in
-`processTestPostJob`.
+**postTestComment** — Stub node. Sets `testStatus = 'done'`. The actual commit
+to the PR branch and CI trigger happens in `ReviewProcessor.processTestPostJob`
+via `ReviewCommenter.commitFileToBranch`.
 
 ## Interrupt Mechanism
 
@@ -219,7 +233,7 @@ Each review runs through up to 4 job types on the same queue.
 | 1 | `review-analyze` | Webhook | Runs Phase 1 graph until `humanGate` ✋, saves pending review |
 | 2 | `review-revise` | Human clicks "Revise" | Updates checkpoint with feedback, resumes graph loops back to generateReview |
 | 3 | `review-post` | Human clicks "Approve" | Posts code review to GitHub, optionally starts Phase 2 (test generation) |
-| 4 | `test-post` | Human clicks "Approve Tests" | Posts test review to GitHub, resumes graph to completion |
+| 4 | `test-post` | Human clicks "Approve Tests" | Commits test file to PR branch via Octokit, triggering CI (test.yml) |
 
 ## DeepSeek Tool Loop
 
@@ -304,7 +318,7 @@ The decision gate has distinct states for each pipeline phase:
 | `posting` | All disabled | Hidden |
 | `done` | All disabled | Hidden |
 | `cancelled` | All disabled | Hidden |
-| `awaiting_test_approval` | "Approve Tests & Comment", "Discard Tests" | Hidden |
+| `awaiting_test_approval` | "Approve Tests & Commit", "Discard Tests" | Hidden |
 
 **Test generation checkboxes** (visible only on `awaiting_approval`):
 - `☐ Write unit tests`
@@ -353,6 +367,7 @@ Current limitations and their resolutions:
 | In-memory review store (`Map`) — lost on restart | Redis or database-backed store |
 | Sequential tool execution within batches | `Promise.all` for same-batch calls |
 | Single ReadFile tool for test generation | Same pattern as code reviewer — already sufficient with repoContext |
+| No test revision loop in Phase 2 | Intentional — one-shot commit; CI proves correctness. Human fixes on GitHub if needed. |
 
 ## Files Referenced
 

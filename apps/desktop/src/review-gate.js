@@ -584,7 +584,7 @@ function updateGate(status) {
     case 'awaiting_test_approval':
       statusEl.innerHTML = '<div class="status-dot" style="background:#8b5cf6;animation:pulse 1s infinite"></div><span>PAUSED: Review Generated Tests</span>';
       approveBtn.disabled = false;
-      approveBtn.textContent = 'Approve Tests & Comment';
+      approveBtn.textContent = 'Approve Tests & Commit';
       cancelBtn.disabled = false;
       cancelBtn.textContent = 'Discard Tests';
       approveBtn.onclick = approveTestsReview;
@@ -592,14 +592,18 @@ function updateGate(status) {
       // Hide code review controls, show test review
       if (controls) controls.classList.remove('visible');
       break;
-    case 'posting':
-      statusEl.innerHTML = '<div class="status-dot" style="background:#22c55e"></div><span>Posting review to GitHub...</span>';
+    case 'posting': {
+      const isTestPost = r?.testTypes && r.testTypes.length > 0;
+      statusEl.innerHTML = isTestPost
+        ? '<div class="status-dot" style="background:#22c55e"></div><span>Committing tests to PR branch...</span>'
+        : '<div class="status-dot" style="background:#22c55e"></div><span>Posting review to GitHub...</span>';
       // Restore button state after test approval posting
       approveBtn.textContent = 'Approve & Comment';
       cancelBtn.textContent = 'Cancel Review';
       approveBtn.onclick = approveReview;
       cancelBtn.onclick = cancelReview;
       break;
+    }
     case 'done':
       statusEl.innerHTML = '<div class="status-dot" style="background:#22c55e"></div><span>Review posted ✓</span>';
       break;

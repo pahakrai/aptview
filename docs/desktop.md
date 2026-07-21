@@ -110,10 +110,31 @@ Split-pane view:
 
 ### Decision Gate
 
-- **PAUSED status**: Shown when LangGraph hits the interrupt before posting
-- **Approve & Comment**: Resumes the graph, posts to GitHub via Octokit
-- **Cancel Review**: Discards the review, never posts
-- **Manually Trigger Review**: Re-runs analysis on current PR data
+The gate has distinct states for each pipeline phase:
+
+| State | Buttons | Controls |
+|---|---|---|
+| No review | All disabled | Hidden |
+| `reviewing` | All disabled | Hidden |
+| `awaiting_approval` | Approve & Comment, Revise, Cancel | Notes, revision badge, test checkboxes |
+| `posting` | All disabled | Shows "Posting review..." or "Committing tests..." |
+| `done` | All disabled | "Review posted ✓" |
+| `cancelled` | All disabled | "Review cancelled" |
+| `awaiting_test_approval` | Approve Tests & Commit, Discard Tests | Shows test code + AI review |
+
+**Phase 1 — Code Review:**
+- **Approve & Comment**: Resumes the graph, posts review to GitHub via Octokit. Optionally triggers Phase 2 if test checkboxes were selected.
+- **Revise & Re-generate**: Sends feedback to the LLM for re-generation (max 3 rounds).
+- **Cancel Review**: Discards the review, never posts.
+
+**Phase 2 — Test Generation (optional):**
+- **Approve Tests & Commit**: Commits the test file to the PR branch via Octokit. This triggers GitHub Actions CI (`test.yml`) which runs the generated tests automatically. The PR is blocked from merging until CI passes.
+- **Discard Tests**: Drops the generated tests, reverts to code review view.
+
+**Test generation checkboxes** (visible only on `awaiting_approval`):
+- `☐ Write unit tests`
+- `☐ Write integration tests`
+- Dynamic hint: "Will generate: unit and integration tests"
 
 ## Communication with backend
 

@@ -9,16 +9,32 @@ review before it reaches GitHub.
 ```
 PR opened on GitHub
     │
-    ├─▶ Automated Scoring
+    ├─▶ Pipeline 1: Automated Scoring
     │     DeepSeek/Claude checks every guideline
     │     → compliance%, efficiency%, coverage%
+    │     → Stored in database, shown on dashboard
     │
-    └─▶ Human-in-the-Loop Review
-          AI analyzes the diff against your standards
-          ──▶ pauses for your approval ──▶ posts to GitHub
+    └─▶ Pipeline 2: HITL Review (Human-in-the-Loop)
+          │
+          ├─ Phase 1: Code Review
+          │   AI analyzes the diff against your standards
+          │   ──▶ pauses in desktop app for your approval
+          │   ──▶ you approve/revise/cancel
+          │   ──▶ posts review comment to GitHub
+          │
+          └─ Phase 2: Test Generation (optional)
+              AI generates unit/integration tests
+              ──▶ AI reviews the generated tests
+              ──▶ pauses in desktop app for your approval
+              ──▶ you approve → test file committed to PR branch
+              ──▶ GitHub Actions CI runs the tests automatically
+              ──▶ ✅ pass → merge  |  ❌ fail → fix → re-run → merge
 ```
 
-Two pipelines, one decision gate. Scores are automatic. Reviews wait for you.
+Three actors, three competencies:
+- **AI** writes (fast, tireless, pattern-aware)
+- **Human** judges (context, intent, business logic)
+- **CI** verifies (deterministic, reproducible, blocks bad merges)
 
 ## Quick Start
 
@@ -106,6 +122,7 @@ docs/              Setup, scoring, reviews, architecture, configuration
 ## Key Features
 
 - **Dual pipeline** — scoring runs automatically, reviews wait for human approval
+- **Two-phase review** — Phase 1: code review with revision loop. Phase 2: AI generates tests, human approves, CI verifies
 - **Three analysis modes** — regex, SDK, or K8s sandbox
 - **Percentage scores** — compliance, efficiency, coverage (not just pass/fail)
 - **Cluster Debugger** — AI-powered K8s troubleshooting via Kubetail MCP + DeepSeek

@@ -67,19 +67,59 @@ GitHub PR webhook
 │      │     └─→ PostgreSQL: ai_audits (compliance%, efficiency%)       │
 │      │                                                                 │
 │      └─→ BullMQ 'reviews' queue → ReviewProcessor                     │
-│            └─→ LangGraph Pipeline:                                    │
-│                  fetchDiff → generateReview → INTERRUPT               │
-│                      │                                                │
-│                      ▼ (human clicks Approve)                         │
-│                  postToGitHub → Octokit → PR comment                  │
+│            └─→ LangGraph Pipeline (two-phase):                        │
+│                                                                       │
+│            Phase 1: Code Review                                       │
+│              fetchDiff → generateReview ⇄ ReadFile tool loop         │
+│                │                                                      │
+│                ▼                                                      │
+│              humanGate ✋ (desktop shows diff + review)               │
+│                │                                                      │
+│                ▼ (human clicks Approve)                               │
+│              postToGitHub → Octokit → PR comment                     │
+│                │                                                      │
+│                ├─ no tests requested → END                            │
+│                │                                                      │
+│                └─ tests requested ↓                                   │
+│                                                                       │
+│            Phase 2: Test Generation (optional)                        │
+│              generateTests ⇄ ReadFile tool loop                      │
+│                │                                                      │
+│                ▼                                                      │
+│              reviewTests (AI self-reviews generated tests)            │
+│                │                                                      │
+│                ▼                                                      │
+│              testHumanGate ✋ (desktop shows test code + AI review)  │
+│                │                                                      │
+│                ├─ Approve → commit file to PR branch (Octokit)        │
+│                │              │                                       │
+│                │              ▼                                       │
+│                │           GitHub Actions → test.yml runs tests      │
+│                │              │                                       │
+│                │              ├─ ✅ → merge                           │
+│                │              └─ ❌ → fix → re-run → merge           │
+│                │                                                      │
+│                └─ Discard → tests dropped, review complete            │
 │                                                                       │
 │  Checkpoints: In-memory (MemorySaver)                                │
 │  Streaming:   WebSocket (Socket.IO) → Electron                       │
 └───────────────────────────────────────────────────────────────────────┘
 ```
 
+### Three-Actor Model
+
+The pipeline separates responsibilities across three actors:
+
+| Actor | Role | Phase |
+|---|---|---|
+| **AI** (DeepSeek) | Writes reviews and test code | generateReview, generateTests, reviewTests |
+| **Human** (Desktop) | Judges correctness and intent | humanGate, testHumanGate |
+| **CI** (GitHub Actions) | Verifies execution deterministically | test.yml (post-commit) |
+
+The AI writes, the human judges, the CI proves. No actor crosses into another's lane.
+
 See [reviews.md](reviews.md) for a detailed explanation of the LangGraph
-orchestration, the DeepSeek tool loop, the BullMQ two-job split, and the
+orchestration, the DeepSeek tool loop, the BullMQ job lifecycle, and the
 WebSocket + polling dual channel.
 
 ## Log Analyzer Pipeline (Cluster Debugger)

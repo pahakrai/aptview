@@ -97,6 +97,34 @@ export class ReviewCommenter {
   }
 
   /**
+   * Commit a file to a branch, creating or updating it.
+   * Used to push AI-generated test files to the PR branch so CI can run them.
+   */
+  async commitFileToBranch(params: {
+    owner: string;
+    repo: string;
+    path: string;
+    content: string;
+    branch: string;
+    message: string;
+  }): Promise<void> {
+    this.logger.log(
+      `Committing ${params.path} to ${params.owner}/${params.repo}@${params.branch}`,
+    );
+
+    await this.octokit.rest.repos.createOrUpdateFileContents({
+      owner: params.owner,
+      repo: params.repo,
+      path: params.path,
+      message: params.message,
+      content: Buffer.from(params.content).toString('base64'),
+      branch: params.branch,
+    });
+
+    this.logger.log(`File committed: ${params.path}`);
+  }
+
+  /**
    * Fetch the diff for a PR.
    */
   async getDiff(

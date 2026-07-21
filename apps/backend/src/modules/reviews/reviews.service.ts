@@ -242,5 +242,10 @@ export class ReviewsService {
       (review as PendingReview).status = status as PendingReview['status'];
       if (this.reviews.has(threadId)) this.reviews.set(threadId, review as PendingReview);
     }
+
+    // Notify desktop in real-time — avoids waiting for polling cycle
+    if (this.webSocketServer) {
+      this.webSocketServer.emit('review:status', { threadId, status });
+    }
   }
 }
