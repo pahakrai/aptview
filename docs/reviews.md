@@ -2,7 +2,7 @@
 
 This document explains how the HITL (Human-In-The-Loop) review pipeline works
 end-to-end: from GitHub webhook through LangGraph + DeepSeek, to the desktop
-approval gate, and finally to a PR comment on GitHub.
+approval gate, and finally to PR comments on GitHub.
 
 ## Two Parallel Pipelines
 
@@ -18,109 +18,225 @@ PR opened on GitHub
   │     → Stored in ai_audits → Dashboard + Desktop score bar
   │
   └─→ Pipeline 2: REVIEW (HITL, this document)
-        BullMQ → LangGraph (fetchDiff → generateReview ⇄ tool loop → interrupt)
-        → Review text → Desktop app shows diff + review
-        → Human approves → Octokit posts comment to GitHub
+        BullMQ → LangGraph (two-phase: code review + optional test generation)
+        → Review text + test code → Desktop app shows diff + review + tests
+        → Human approves each phase → Octokit posts comments to GitHub
 ```
 
-The audit pipeline runs automatically and is always scored. The review pipeline
-pauses for human approval before publishing anything to GitHub.
+## Two-Phase Pipeline
+
+The review pipeline has two phases. Phase 1 (code review) always runs. Phase 2
+(test generation) is optional — the human selects it via checkboxes on approve.
+
+```
+Phase 1: Code Review (always runs)
+──────────────────────────────────
+  fetchDiff → generateReview ⇄ ReadFile tool loop → humanGate ✋
+    │                                                    │
+    │  Human can: approve, revise (max 3 rounds),        │
+    │  add personal notes, cancel                        │
+    │                                                    │
+    ▼                                                    ▼
+  postToGitHub ──→ check: tests requested?
+                       │
+              ┌────────┴────────┐
+              │                 │
+              ▼                 ▼
+Phase 2:  generateTests       END
+              │
+              ▼
+         reviewTests
+              │
+              ▼
+         testHumanGate ✋
+              │
+              ▼
+         postTestComment → END
+```
 
 ## LangGraph State Machine
 
-The graph has three nodes connected by two edges and one conditional loop.
+### Graph Topology
+
+The graph has 8 nodes, 2 interrupt points, and conditional routing at 4 points.
 
 ```mermaid
-graph LR
+graph TD
     START[__start__] --> FD[fetchDiff]
     FD --> GR[generateReview]
     GR -- "status=reviewing" --> GR
-    GR -- "status=awaiting_approval" --> PTG[postToGitHub]
-    PTG --> END
+    GR -- "status=awaiting_approval" --> HG[humanGate ✋]
+    HG -- "approve" --> PTG[postToGitHub]
+    HG -- "revise" --> GR
+    HG -- "cancel" --> END1[END]
+    PTG -- "tests requested" --> GT[generateTests]
+    PTG -- "no tests" --> END2[END]
+    GT -- "still fetching" --> GT
+    GT -- "done" --> RT[reviewTests]
+    RT --> THG[testHumanGate ✋]
+    THG -- "approve" --> PTC[postTestComment]
+    THG -- "cancel" --> END3[END]
+    PTC --> END4[END]
 ```
 
-### State definition
+### State Definition
 
 State is defined via LangGraph's `Annotation.Root()` with typed fields and
-reducers. Key fields:
+reducers. The state has 28 fields across two phases.
+
+**Phase 1 fields (code review):**
 
 | Field | Type | Purpose |
 |---|---|---|
-| `messages` | `BaseMessage[]` | Conversation history, uses concat reducer to accumulate across loop iterations |
-| `toolCallCount` | `number` | Loop guard — prevents infinite re-entry, capped at 10 |
-| `status` | enum | Drives conditional routing: `fetching` → `reviewing` → `awaiting_approval` → `posting` → `done` |
-| `reviewText` | `string` | Final review output, set when DeepSeek returns content without tool_calls |
+| `prNumber` | `number` | PR number for display and GitHub API |
+| `prTitle` | `string` | PR title for context |
+| `commitSha` | `string` | Commit SHA for file fetching |
+| `owner` / `repo` | `string` | Repository identifiers |
 | `diffContent` | `string` | PR diff injected at graph.invoke() time |
-| `guidelines` | `string` | Active org coding standards formatted for the LLM prompt |
-| `repoContext` | `string` | Directory listing + key files for cross-file analysis context |
+| `taskDescription` | `string` | PR body — requirement context |
+| `guidelines` | `string` | Active org coding standards formatted for LLM |
+| `repoContext` | `string` | Directory listing + key files for cross-file context |
+| `reviewText` | `string` | Final code review output from LLM |
+| `status` | enum | Drives Phase 1 routing: `fetching` → `reviewing` → `awaiting_approval` → `posting` → `done` / `cancelled` |
+| `messages` | `BaseMessage[]` | Conversation history with concat reducer — accumulates across tool-loop iterations |
+| `toolCallCount` | `number` | Loop guard — prevents infinite ReadFile cycles, capped at 10 |
+| `humanNotes` | `string` | Reviewer's personal annotations — appended to GitHub comment |
+| `humanFeedback` | `string` | Feedback for revision — injected as "Reviewer Feedback" block, consumed once |
+| `revisionCount` | `number` | How many times the human requested revision (max 3) |
 
-### Nodes
+**Phase 2 fields (test generation):**
+
+| Field | Type | Purpose |
+|---|---|---|
+| `generateTests` | `boolean` | Whether human requested test generation on approve |
+| `testTypes` | `string[]` | Which test types: `['unit']`, `['integration']`, or both |
+| `generatedTestsContent` | `string` | Raw test code generated by LLM |
+| `testReviewText` | `string` | AI review of the generated tests |
+| `testStatus` | enum | Drives Phase 2 routing: `idle` → `generating` → `reviewing_tests` → `awaiting_approval` → `posting` → `done` |
+| `testMessages` | `BaseMessage[]` | Test generation conversation history (separate from code review messages) |
+| `testToolCallCount` | `number` | Loop guard for test-phase ReadFile calls, capped at 8 |
+
+## Nodes
+
+### Phase 1 Nodes
 
 **fetchDiff** — A pass-through node that logs the PR and transitions status to
 `reviewing`. The actual diff is injected as initial state from the webhook
-payload, not fetched inside the graph.
+handler — no external fetch needed.
 
-**generateReview** — The core node. Handles the DeepSeek API call and the tool
-execution loop. See [DeepSeek Tool Loop](#deepseek-tool-loop) below for the
-internal mechanism.
+**generateReview** — The core code review node. On each invocation:
 
-**postToGitHub** — A terminal node that sets `status: 'done'`. In the current
-implementation the actual GitHub API call lives in `ReviewProcessor.processPostJob()`
-outside the graph (see [Production Hardening](#production-hardening) for why this
-should move into the node).
+1. Assembles system prompt from task description, guidelines, diff, and repo context
+2. If `humanFeedback` is non-empty, injects a "Reviewer Feedback" block directing the LLM
+3. Calls DeepSeek API with `ReadFile` tool definition
+4. If LLM requests files: fetches via GitHub API → loops back (up to 10 times)
+5. If LLM produces final text: saves to `reviewText`, sets `status = 'awaiting_approval'`
+6. Consumes `humanFeedback` on every execution (clears it after use)
 
-### Conditional routing
+Uses raw `fetch()` to `https://api.deepseek.com/v1/chat/completions` — no SDK,
+full control over message construction and `tool_call_id` matching.
 
-After `generateReview` executes, `afterGenerateReview(state)` checks
-`state.status`:
+**humanGate** — Interrupt point (pass-through node). LangGraph pauses BEFORE
+this node executes. The human modifies checkpoint state via `updateState()`
+(approve, revise, cancel). When resumed, the conditional edge reads the
+modified `status` and routes to the correct next node.
 
-- `'reviewing'` → re-enter `generateReview` (tool calls were executed, loop back)
-- `'awaiting_approval'` → proceed to `postToGitHub` (review is complete)
+**postToGitHub** — Stub node. Sets `status = 'done'`. The actual GitHub posting
+happens in `ReviewProcessor.processPostJob` before the graph resumes.
 
-### Interrupt
+### Phase 2 Nodes
 
-The graph is compiled with `interruptBefore: ['postToGitHub']`. This pauses
-execution after `generateReview` produces the final review text but before
-anything is posted. The state is checkpointed in `MemorySaver` keyed by
-`thread_id` (a UUID). The interrupt is what enables the human approval gate —
-the graph will not continue past this point until `graph.invoke(null, config)`
-is called again.
+**generateTests** — LLM writes tests for the diff. On each invocation:
 
-### Checkpointing
+1. Assembles system prompt directing the LLM to read source files before writing
+2. Injects repoContext (directory structure) so the LLM finds existing tests and types
+3. Calls DeepSeek API with `ReadFile` tool definition — same pattern as code reviewer
+4. If LLM requests files (source code, existing tests, type definitions): fetches via GitHub API → loops back (up to 8 times)
+5. If LLM produces test code: saves to `generatedTestsContent`, sets `testStatus = 'reviewing_tests'`
 
-`MemorySaver` stores graph state in process memory. State is saved at every
-graph transition. This is what allows the two-job split to work: Job 1 writes
-the checkpoint, Job 2 reads it. The checkpoint key is the `thread_id`
-configured via `{ configurable: { thread_id } }`.
+The LLM explores: reads changed source files → reads existing test files to
+match patterns → reads type definitions → generates tests that fit the project.
 
-**Caveat:** `MemorySaver` is in-memory only. A process restart loses all
-checkpoints. See [Production Hardening](#production-hardening).
+**reviewTests** — LLM reviews the generated tests. Checks:
+
+1. Correctness — do the tests actually test the code changes?
+2. Coverage — are edge cases, error paths, and happy paths covered?
+3. Structure — are mocks appropriate, assertions meaningful?
+4. Maintainability — clear test names, consistent patterns?
+
+Produces `testReviewText` and sets `testStatus = 'awaiting_approval'`.
+
+**testHumanGate** — Second interrupt point. Same pattern as `humanGate` —
+LangGraph pauses before this node. The human sees generated test code + AI
+review and approves or discards.
+
+**postTestComment** — Stub node. Sets `testStatus = 'done'`. Actual posting in
+`processTestPostJob`.
+
+## Interrupt Mechanism
+
+The review pipeline uses three LangGraph primitives:
+
+```
+1. checkpointer → saves graph state after every node, keyed by thread_id
+2. interruptBefore → stops execution RIGHT BEFORE named nodes
+3. updateState + invoke(null) → external code modifies checkpoint, then resumes
+```
+
+```ts
+return graph.compile({
+  interruptBefore: ['humanGate', 'testHumanGate'],  // ← two pause points
+  checkpointer,                                       // ← MemorySaver
+});
+```
+
+When the graph reaches a node in `interruptBefore`, it stops execution. The
+checkpoint saves the current state. The `invoke()` call returns. The BullMQ
+job finishes.
+
+The human's decision enters via `graph.updateState()`:
+
+```ts
+// Approve code review:
+await graph.updateState(config, { status: 'awaiting_approval' });
+await graph.invoke(null, config);  // resume
+
+// Revise (with feedback):
+await graph.updateState(config, {
+  humanFeedback: 'Check error handling',
+  revisionCount: currentState.revisionCount + 1,
+  status: 'reviewing',
+});
+await graph.invoke(null, config);  // loop back to generateReview
+```
+
+## BullMQ Job Lifecycle
+
+Each review runs through up to 4 job types on the same queue.
+
+| Job | Type | Trigger | What it does |
+|---|---|---|---|
+| 1 | `review-analyze` | Webhook | Runs Phase 1 graph until `humanGate` ✋, saves pending review |
+| 2 | `review-revise` | Human clicks "Revise" | Updates checkpoint with feedback, resumes graph loops back to generateReview |
+| 3 | `review-post` | Human clicks "Approve" | Posts code review to GitHub, optionally starts Phase 2 (test generation) |
+| 4 | `test-post` | Human clicks "Approve Tests" | Posts test review to GitHub, resumes graph to completion |
 
 ## DeepSeek Tool Loop
 
-The `generateReviewNode` function implements a manual tool-use loop. On each
-invocation it:
+Both `generateReviewNode` and `generateTestsNode` implement a manual tool-use
+loop. The pattern is identical:
 
-### 1. Builds the message array
+### 1. Build message array
 
 ```typescript
 const apiMessages = [
   { role: 'system', content: systemPrompt },
-  { role: 'user',  content: userPrompt },   // task + standards + diff + repo context
-  // ... state.messages appended from previous turns (assistant responses + tool results)
+  { role: 'user', content: userPrompt },
+  // ... state.messages from previous turns (assistant responses + tool results)
 ];
 ```
 
-The `state.messages` accumulator stores `AIMessage` and `ToolMessage` objects
-from prior loop iterations. On re-entry, the full conversation history is
-reconstructed — DeepSeek receives the same context it would in a continuous
-session.
-
-### 2. Calls DeepSeek API
-
-Uses raw `fetch()` to `https://api.deepseek.com/v1/chat/completions` (not an
-SDK). This gives full control over message construction and tool_call_id
-matching.
+### 2. Call DeepSeek API
 
 ```typescript
 const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
@@ -129,418 +245,124 @@ const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
   body: JSON.stringify({
     model: 'deepseek-chat',
     messages: apiMessages,
-    tools: [/* ReadFile function definition */],
+    tools: [ReadFile tool definition],
     temperature: 0.3,
     max_tokens: 4096,
   }),
 });
 ```
 
-### 3. Branches on response
+Model-agnostic — change the URL, model name, and API key to switch providers.
 
-**If tool_calls present** (and `toolCallCount < 10`):
-- Creates an `AIMessage` with the `tool_calls` attached
-- Executes each tool: `ReadFile` fetches from GitHub's Contents API
-- Creates a `ToolMessage` per result with `tool_call_id` matching the request
-- Returns `{ messages: [assistantMsg, ...toolResults], toolCallCount: +1, status: 'reviewing' }`
-- The conditional edge routes back to `generateReview`
+### 3. Branch on response
 
-**If no tool_calls** (final response):
-- Extracts `choice.content` as `reviewText`
-- Returns `{ reviewText, status: 'awaiting_approval', messages: [...] }`
-- The conditional edge routes to `postToGitHub` (blocked by interrupt)
+**If `tool_calls` present** (and under call limit):
+- Creates `AIMessage` with `tool_calls` attached
+- Executes each tool: `ReadFile` fetches from GitHub Contents API using the commit SHA
+- Creates `ToolMessage` per result with `tool_call_id` matching the request
+- Returns partial state with new messages → LangGraph loops back
 
-### Tool: ReadFile
+**If no `tool_calls`** (or limit reached):
+- Saves `choice.content` as final output (`reviewText` or `generatedTestsContent`)
+- Sets status to `awaiting_approval` or `reviewing_tests`
 
-The graph exposes a single tool to the LLM:
+### 4. tool_call_id matching
 
-```typescript
-{
-  type: 'function',
-  function: {
-    name: 'ReadFile',
-    description: 'Read the full content of a file from the repository',
-    parameters: {
-      type: 'object',
-      properties: { path: { type: 'string' } },
-      required: ['path'],
-    },
-  },
-}
-```
+DeepSeek requires each `ToolMessage` to reference the `tool_call_id` from the
+corresponding assistant request. Missing or mismatched IDs cause API errors.
 
-Tool execution hits GitHub's Contents API at the PR's commit SHA, decodes the
-base64 response, and returns the file content. If the file is not found or the
-API call fails, it returns `'[File not found]'` and continues — the LLM can
-adapt.
+## Tool Call Parallelism
 
-### Loop safety
-
-- **Hard cap**: `toolCallCount < 10` — the node will not re-enter after 10
-  tool-call iterations. The review is returned with whatever content the LLM
-  has produced at that point.
-- **Cost**: Each re-entry sends the full accumulated message history to
-  DeepSeek, so conversation growth is linear with each tool call.
-
-## BullMQ Two-Job Split
-
-The review lifecycle is split across two BullMQ jobs, both handled by the
-same `ReviewProcessor` worker. This split exists because the human approval
-gap can span minutes or hours — you cannot hold a single job open that long.
-
-### Job 1: `review-analyze`
-
-Enqueued by `ReviewsService.startReview()`.
-
-1. Injects `DEEPSEEK_API_KEY` and `GITHUB_TOKEN` via `setGraphDependencies()`
-2. Builds LangGraph, calls `graph.invoke(initialState, { configurable: { thread_id } })`
-3. Graph runs `fetchDiff` → `generateReview` (with tool loops) → pauses at interrupt
-4. Calls `reviewsService.savePendingReview()` — stores review text in memory,
-   emits `review:complete` via WebSocket
-5. Returns `{ threadId, status: 'awaiting_approval' }`
-
-### Job 2: `review-post`
-
-Enqueued by `ReviewsService.approveReview()` when the human clicks [Approve].
-
-1. Loads checkpoint via `graph.getState(config)`
-2. Posts review comment to GitHub via `ReviewCommenter.postComment()`
-3. Resumes graph via `graph.invoke(null, config)` — runs `postToGitHubNode`
-4. Calls `reviewsService.updateReviewStatus(threadId, 'done')`
-
-### Thread ID as bridge
-
-The `thread_id` is a UUID generated in `ReviewsService.startReview()`. It is:
-- Stored in the `ReviewJobData` for Job 1
-- Passed to Job 2 via `{ threadId }` in the job payload
-- Used as the `configurable.thread_id` for LangGraph checkpointing
-- Used as the key in `ReviewsService`'s in-memory Map
-- Used as the route parameter in `POST /reviews/:id/approve`
-
-No state is shared between the two jobs except this ID. The checkpoint and
-the pending review store are the only state carriers.
-
-## Why the Queue Pattern
-
-The BullMQ queue serves three purposes, none of which are about parallelism
-(the default concurrency is 1):
-
-### 1. Async decoupling (primary)
-
-GitHub webhooks expect a response within 10 seconds. The DeepSeek review loop
-takes 15–45 seconds. Without the queue, the webhook handler would have to
-`await graph.invoke()` synchronously and the HTTP connection would time out.
-Instead:
+The LLM decides which files to request and whether to batch them:
 
 ```
-Webhook → enqueue job (2ms) → 202 Accepted
-                              ↓
-                        worker picks up job later
+Independent files → batched in one response:
+  tool_calls: [ReadFile("auth.ts"), ReadFile("payment.ts")]
+  → Same turn. LLM assumes no dependency.
+
+Dependent files → split across turns:
+  Turn 1: ReadFile("auth.ts")
+  Turn 2: auth.ts imports session.ts → ReadFile("session.ts")
+  → Different turns. LLM needed auth.ts result before deciding.
 ```
 
-### 2. Backpressure
+The LLM's batching is its parallelism expression. Calls in the same batch
+are independent. Calls across turns are sequential by necessity.
 
-If multiple PRs open in quick succession, jobs queue in Redis rather than
-overwhelming the DeepSeek API with concurrent connections.
+Execution is sequential within a batch (`for...of` with `await`). This can
+be optimized with `Promise.all` because same-batch calls are always independent.
 
-### 3. Reliability
+## Desktop UI
 
-BullMQ handles job retries on failure. If the DeepSeek API returns a 429 or
-503, the job is retried automatically.
+The decision gate has distinct states for each pipeline phase:
 
-## WebSocket + Polling Dual Channel
-
-The desktop app uses both push and pull for resilience:
-
-| Channel | Protocol | Events |
+| State | Buttons | Controls |
 |---|---|---|
-| WebSocket | Socket.IO (`/reviews` namespace) | `review:started`, `review:token`, `review:complete`, `review:status` |
-| Polling | HTTP `GET /api/v1/reviews/pending` | Every 3 seconds, merges with local state |
+| No review | All disabled | Hidden |
+| `reviewing` | All disabled | Hidden |
+| `awaiting_approval` | Approve, Cancel, Revise | Notes, revision badge, test checkboxes |
+| `posting` | All disabled | Hidden |
+| `done` | All disabled | Hidden |
+| `cancelled` | All disabled | Hidden |
+| `awaiting_test_approval` | "Approve Tests & Comment", "Discard Tests" | Hidden |
 
-The WebSocket provides instant updates. The polling serves as a fallback
-for missed events (disconnects, reconnects, page reloads). The merge logic
-in `fetchPendingReviews()` updates existing reviews by `threadId` and appends
-new ones — it never duplicates.
+**Test generation checkboxes** (visible only on `awaiting_approval`):
+- `☐ Write unit tests`
+- `☐ Write integration tests`
+- Dynamic hint: "Will generate: unit and integration tests"
 
-## End-to-End Flow
+## Controller API
+
+All actions go through a single endpoint:
 
 ```
-1. GitHub PR webhook
-   POST /webhooks/github (HMAC validated)
-   → WebhooksService.processGitHubWebhook()
-   → ReviewsService.startReview()
-   → Enqueues "review-analyze" job
+POST /api/v1/reviews/:id/action
 
-2. ReviewProcessor picks up job
-   → Injects DEEPSEEK_API_KEY + GITHUB_TOKEN
-   → Builds LangGraph with thread_id
-   → graph.invoke(initialState)
+Phase 1:
+  { action: 'approve', notes?, generateTests?, testTypes? }
+  { action: 'revise', feedback: string }
+  { action: 'cancel' }
 
-3. LangGraph executes
-   → fetchDiff: status → 'reviewing'
-   → generateReview: calls DeepSeek API
-     ├─ tool_calls? → fetch file from GitHub → loop back (up to 10×)
-     └─ final text → status → 'awaiting_approval'
-   → Interrupt before postToGitHub: graph pauses
-
-4. ReviewProcessor saves result
-   → ReviewsService.savePendingReview()
-   → Emits 'review:complete' via WebSocket
-
-5. Desktop app receives event
-   → Renders review text in right pane
-   → Shows "PAUSED: Awaiting Human Approval"
-   → Enables [Approve] and [Cancel] buttons
-   → Fetches scores from audits API for score bar
-
-6. Human clicks [Approve]
-   → POST /api/v1/reviews/:id/approve
-   → ReviewsService.approveReview()
-   → Enqueues "review-post" job
-
-7. ReviewProcessor picks up job
-   → graph.getState(config) — loads checkpoint
-   → reviewCommenter.postComment() — posts to GitHub PR
-   → graph.invoke(null, config) — resumes past interrupt
-   → Updates status to 'done'
-
-8. GitHub PR
-   → AI review appears as a comment
-   → Human reviewer on GitHub uses it to inform merge decision
+Phase 2:
+  { action: 'approve-tests' }
+  { action: 'cancel-tests' }
 ```
 
-## LLM API Separation
+Additional endpoints:
+- `POST /api/v1/reviews/start` — Start review from webhook
+- `GET /api/v1/reviews/pending` — List pending code reviews
+- `GET /api/v1/reviews/tests/pending` — List pending test reviews
+- `GET /api/v1/reviews/:id` — Get review + test review by thread ID
 
-The review pipeline and audit pipeline use different LLM APIs. They are
-completely independent — no API key is shared between them:
+## Configuration
 
-| Pipeline | Harness | Backend API | API Key |
-|---|---|---|---|
-| Reviews | LangGraph + raw `fetch` | DeepSeek (`deepseek-chat`) | `DEEPSEEK_API_KEY` |
-| Audits (inline) | Regex in-process | N/A | None |
-| Audits (sdk) | Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) | Anthropic (`claude-sonnet-4-20250514`) | `ANTHROPIC_API_KEY` |
-| Audits (sandbox) | CodeWhale (K8s Job) | DeepSeek (`deepseek-v4-flash`) | `DEEPSEEK_API_KEY` |
+All configuration via environment variables:
+
+| Variable | Purpose | Example |
+|---|---|---|
+| `DEEPSEEK_API_KEY` | DeepSeek API authentication | `sk-...` |
+| `GITHUB_TOKEN` | GitHub API for file fetching + PR comments | `ghp_...` |
 
 ## Production Hardening
 
-The current implementation is correct for development and single-instance
-deployment. For production use, three areas need attention:
+Current limitations and their resolutions:
 
-### 1. Persistent checkpoints
-
-`MemorySaver` is in-memory. A process restart between Job 1 and Job 2 loses
-the checkpoint, and Job 2 throws `"No checkpoint found"`. Remediation:
-
-- Swap `MemorySaver` for a PostgreSQL-backed or Redis-backed checkpointer
-  when LangGraph support is available
-- Alternative: serialize checkpoint state into the `PendingReview` record
-  so `processPostJob` can reconstruct state without `getState()`
-
-### 2. Persistent review store
-
-`ReviewsService` uses an in-memory `Map`. A restart loses all pending reviews.
-Add a `pending_reviews` table to PostgreSQL — same pattern as `ai_audits`.
-
-### 3. Move posting into the graph node
-
-Currently `postComment()` is called in `processPostJob` *before*
-`graph.invoke()`. `postToGitHubNode` is a no-op that just sets `status: 'done'`.
-If the graph resume crashes after the comment is posted, the comment exists on
-GitHub but the graph never completed. The safer approach:
-
-- Move the `ReviewCommenter.postComment()` call into `postToGitHubNode`
-- Let the graph's checkpoint capture success or failure
-- Wrap with LangGraph's retry policy if needed
-
-### 4. Streaming to desktop
-
-The `review:token` WebSocket event is wired up in the desktop but nothing
-emits it. DeepSeek's API supports SSE streaming — piping `delta.content`
-chunks through the WebSocket would give the reviewer incremental visibility
-instead of a 30-second blank screen during analysis.
-
----
-
-## Log Analyzer Pipeline
-
-The log analyzer is a separate pipeline for AI-powered log debugging.
-Unlike the review pipeline, it has no HITL gate — logs enter, analysis exits.
-
-### Architecture
-
-```
-Desktop App (🔍 Log Checker button)
-  │  text paste or file upload
-  ▼
-POST /api/v1/log-analyzer/analyze
-  │
-  ▼
-BullMQ 'log-analyzer' queue
-  │
-  ▼
-LogAnalyzerProcessor
-  │  1. Builds UnifiedToolbox
-  │  2. Injects DEEPSEEK_API_KEY + toolbox
-  │  3. graph.invoke()
-  ▼
-LangGraph (single node: analyzeLogs)
-  │
-  ├─ DeepSeek API call with all tools
-  │   ├─ tool_calls? → dispatch to toolbox router → loop back
-  │   └─ content?    → save analysisText → END
-  │
-  ▼
-LogAnalyzerService.saveAnalysis()
-  │  emits 'log-analyzer:complete' via WebSocket
-  ▼
-Desktop renders structured markdown report
-```
-
-### The Three-Layer Toolbox
-
-The log analyzer merges tools from three layers into a single DeepSeek-compatible
-tool list. Each layer adds progressively more context:
-
-```
-┌──────────────────────────────────────────────┐
-│ Layer 3: MCP tools       (optional, external) │
-│  k8s_list_pods, aws_filter_log_events,        │
-│  gcp_list_log_entries, ...                    │
-│  → Connected via MCP bridge (stdio transport) │
-├──────────────────────────────────────────────┤
-│ Layer 2: Local skills    (business context)   │
-│  prioritize_by_sla, correlate_cross_cloud_, │
-│  route_diagnostic_to_owner                     │
-│  → In-process TypeScript functions            │
-├──────────────────────────────────────────────┤
-│ Layer 1: Core tools      (log parsing)        │
-│  ParseLogFormat, ExtractErrors,               │
-│  SearchLogs, CountByLevel                     │
-│  → Regex/heuristic, in-process                │
-└──────────────────────────────────────────────┘
-```
-
-### Core Tools (Layer 1)
-
-| Tool | What it does |
+| Limitation | Resolution |
 |---|---|
-| `ParseLogFormat` | Detects JSON/syslog/plain text format, timestamps, log levels, sample entries |
-| `ExtractErrors` | Returns all ERROR/FATAL/CRITICAL lines with configurable context lines |
-| `SearchLogs` | Regex search across log content with case-insensitive option |
-| `CountByLevel` | Counts entries by severity (ERROR/WARN/INFO/DEBUG/TRACE/FATAL) |
+| `MemorySaver` — checkpoints lost on restart | PostgresSaver for persistence |
+| In-memory review store (`Map`) — lost on restart | Redis or database-backed store |
+| Sequential tool execution within batches | `Promise.all` for same-batch calls |
+| Single ReadFile tool for test generation | Same pattern as code reviewer — already sufficient with repoContext |
 
-### Local Business Skills (Layer 2)
+## Files Referenced
 
-These give DeepSeek domain-specific business context:
-
-| Skill | What it does |
+| File | Purpose |
 |---|---|
-| `prioritize_by_sla` | Cross-references a failing service against the org's SLA map and returns a priority rating (P1-CRITICAL through P4-LOW) with response SLA windows |
-| `correlate_cross_cloud_trace` | Searches for a distributed trace ID across available log sources to build a chronological failure timeline |
-| `route_diagnostic_to_owner` | Maps a failing service to the responsible team, Slack channel, repository link, and PagerDuty service |
-
-**Configuration:** SLA maps and team routing tables are defined in
-`local-skills.ts` with sensible defaults. Override by setting:
-- `SLA_OVERRIDE_{SERVICE}=P1-CRITICAL:15m` environment variables
-- `TEAM_ROUTING_CONFIG_PATH` to a custom JSON file
-
-### MCP Bridge (Layer 3)
-
-The MCP bridge connects to external MCP servers via stdio transport for
-cloud-native log access. Configured via `LOG_ANALYZER_MCP_CONFIG`:
-
-```json
-{
-  "k8s": { "command": "npx", "args": ["-y", "@flux159/mcp-server-kubernetes"] },
-  "aws": { "command": "npx", "args": ["-y", "@awslabs/amazon-cloudwatch-logs-mcp"],
-           "env": { "AWS_REGION": "us-east-1" } },
-  "gcp": { "command": "npx", "args": ["-y", "@swen128/cloud-logging-mcp"],
-           "env": { "GOOGLE_APPLICATION_CREDENTIALS": "./gcp-key.json" } }
-}
-```
-
-When configured, these MCP servers provide tools like `k8s_get_pod_logs`,
-`aws_filter_log_events`, and `gcp_list_log_entries` directly to DeepSeek.
-
-**Current state:** The `McpBridge` class provides the full interface and
-stub implementations. The `@modelcontextprotocol/sdk` dependency is declared
-in `package.json`. To activate real MCP connections, uncomment the SDK
-imports and replace the `connectToServer` stub with actual `Client` and
-`StdioClientTransport` calls.
-
-### Tool Router
-
-The `UnifiedToolbox` (in `toolbox.ts`) provides a single `executeTool` function
-that dispatches tool calls to the correct layer:
-
-```
-DeepSeek calls "ExtractErrors"
-  → toolbox.executeTool("ExtractErrors", args, logContent)
-    → toolLayers.get("ExtractErrors") === "core"
-      → toolExtractErrors(logContent, args.contextLines)
-
-DeepSeek calls "prioritize_by_sla"
-  → toolbox.executeTool("prioritize_by_sla", args, logContent)
-    → toolLayers.get("prioritize_by_sla") === "local-skill"
-      → executeLocalSkill("prioritize_by_sla", args)
-
-DeepSeek calls "k8s_get_pod_logs"
-  → toolbox.executeTool("k8s_get_pod_logs", args, logContent)
-    → toolLayers.get("k8s_get_pod_logs") === "mcp"
-      → mcpBridge.callTool("k8s_get_pod_logs", args)
-```
-
-The graph itself is layer-agnostic — it only calls `toolbox.executeTool()`.
-Adding a new tool layer requires zero changes to the graph or the DeepSeek
-integration.
-
-### Analysis Protocol (DeepSeek system prompt)
-
-DeepSeek is instructed to follow a structured analysis protocol:
-
-1. `ParseLogFormat` — understand the log structure
-2. `CountByLevel` — see severity distribution
-3. `ExtractErrors` — get error details with context
-4. `SearchLogs` — find patterns, trace IDs, exception names
-5. `prioritize_by_sla` — assess business impact of each error
-6. `correlate_cross_cloud_trace` — stitch distributed traces
-7. `route_diagnostic_to_owner` — map to team + Slack + repo
-
-The loop depth is determined by DeepSeek — it calls tools until it has enough
-context, capped at 15 iterations. The harness provides the rails; the model
-decides the depth.
-
-### End-to-End Flow
-
-```
-1. User opens Log Checker overlay (🔍 button in status bar)
-2. Pastes logs or uploads a file (.log, .txt, .json, .csv)
-3. Clicks "Analyze with DeepSeek"
-4. POST /api/v1/log-analyzer/analyze → enqueues BullMQ job
-5. Processor builds UnifiedToolbox, injects into LangGraph
-6. graph.invoke() → DeepSeek drives tool loop (1-15 turns)
-7. Each tool call dispatches to correct layer:
-   - Core tools execute in-process
-   - Local skills execute in-process with business logic
-   - MCP tools (if connected) forward to external MCP servers
-8. Final analysis saved → 'log-analyzer:complete' WebSocket event
-9. Desktop renders structured markdown in output panel
-```
-
-### Files
-
-```
-apps/backend/src/modules/log-analyzer/
-├── log-analyzer.module.ts       NestJS module
-├── log-analyzer.controller.ts   REST + WebSocket (/log-analyzer namespace)
-├── log-analyzer.service.ts      Session store + WebSocket broadcast
-├── log-analyzer.processor.ts    BullMQ worker + MCP bridge init
-├── log-analyzer.graph.ts        LangGraph (single-node, tool loop)
-├── local-skills.ts              Business logic skills (SLA, trace, routing)
-├── mcp-bridge.ts                MCP client manager (pluggable cloud sources)
-└── toolbox.ts                   Unified tool builder + execution router
-
-apps/desktop/src/
-├── log-checker.js               UI logic (overlay, file upload, WS, rendering)
-└── App.html                     Log checker overlay HTML + CSS
-```
+| `apps/backend/src/modules/reviews/review.graph.ts` | LangGraph graph: 8 nodes, 2 interrupts, 4 conditional edges |
+| `apps/backend/src/modules/reviews/review.processor.ts` | BullMQ worker: 4 job types |
+| `apps/backend/src/modules/reviews/reviews.service.ts` | In-memory review + test review stores |
+| `apps/backend/src/modules/reviews/reviews.controller.ts` | REST + WebSocket: action endpoint |
+| `apps/backend/src/modules/reviews/review-commenter.ts` | Octokit: post PR review comments |
+| `apps/desktop/src/review-gate.js` | HITL UI: gate states, checkboxes, actions |
+| `apps/desktop/src/App.html` | Desktop layout: reviewer controls, decision gate |
+| `docs/langgraph-guide.md` | Architecture guide: skills, MCP, patterns |

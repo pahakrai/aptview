@@ -342,6 +342,22 @@ The two-phase BullMQ lifecycle (analyze → await → post) enforces this gate a
 the infrastructure level. The graph won't proceed past `humanGate` until an
 external trigger modifies the checkpoint state.
 
+### Two-phase pipeline: code review + optional test generation
+
+The review pipeline now spans two phases. Phase 1 (code review) always runs.
+Phase 2 (test generation) runs only when the human selects it via checkboxes
+on approve.
+
+```
+Phase 1: fetchDiff → generateReview ⇄ ReadFile → humanGate ✋ → postToGitHub
+Phase 2: generateTests ⇄ ReadFile → reviewTests → testHumanGate ✋ → postTestComment
+```
+
+Phase 2 uses the same ReadFile tool as Phase 1, allowing the LLM to read
+actual source files, existing test patterns, and type definitions before
+writing tests. The human contributes two checkbox clicks and one approve
+button — zero code written manually.
+
 ### When skills would add value
 
 Skills become necessary if the review pipeline evolves to:
