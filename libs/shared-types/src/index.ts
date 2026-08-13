@@ -316,6 +316,8 @@ export interface DecompositionRequest {
 export interface AuditRequest {
   organizationId: string;
   repositoryId: string;
+  /** GitHub "owner/repo" full name — correlates the audit with its HITL review decision. */
+  repositoryFullName?: string;
   prNumber: number;
   prTitle: string;
   commitSha: string;
@@ -330,4 +332,118 @@ export interface StandardsContextMarkdown {
   contextMarkdown: string;
   organizationId: string;
   generatedAt: string;
+}
+
+// ============================================================================
+// A/B Experiments — model & strategy evaluation (feature-flagged)
+// ============================================================================
+
+/** Top-level model vendor. Reporting groups by this, then by modelId. */
+export type ModelVendor = 'deepseek' | 'claude' | 'gemini';
+
+/** Cross-vendor capability tier (used to draw "flash vs flash" comparisons). */
+export type ModelTier = 'flash' | 'base' | 'pro' | 'reasoner';
+
+export interface ModelEntry {
+  vendor: ModelVendor;
+  modelId: string;
+  label: string;
+  tier: ModelTier;
+}
+
+/** How an audit is produced. `deepseek` = direct DeepSeek chat API (new, additive). */
+export type AuditEngine = 'inline' | 'sdk' | 'sandbox' | 'deepseek';
+
+export type PromptVariant = 'baseline' | 'json' | 'cot' | 'few-shot';
+
+/**
+ * AuditStrategy — the fully-resolved configuration of a single experiment arm.
+ * This is the unit that gets A/B tested: engine + model + sampling + prompt.
+ */
+export interface AuditStrategy {
+  engine: AuditEngine;
+  vendor: ModelVendor;
+  modelId: string;
+  temperature: number;
+  maxTokens: number;
+  promptVariant: PromptVariant;
+}
+
+/**
+ * Weights for the composite eval score. Must sum to 1.
+ * `acceptance` folds in the human reviewer's accept/reject signal so that
+ * automated review scores and human judgment are both represented.
+ */
+export interface MetricsWeights {
+  accuracy: number;
+  quality: number;
+  acceptance: number;
+  speed: number;
+  cost: number;
+}
+
+export type ExperimentStatus = 'draft' | 'running' | 'paused' | 'completed';
+
+/** Human code-reviewer decision on a review, captured as an experiment signal. */
+export type ReviewDecisionAction = 'approve' | 'revise' | 'cancel';
+
+/**
+ * MODEL_CATALOG — the vendor → sub-model hierarchy used by the report page.
+ * Baseline for the DeepSeek-first evaluation is `deepseek-v4-pro`.
+ */
+export const MODEL_CATALOG: ModelEntry[] = [
+  { vendor: 'deepseek', modelId: 'deepseek-v4-pro', label: 'V4 Pro', tier: 'pro' },
+  { vendor: 'deepseek', modelId: 'deepseek-v4-flash', label: 'V4 Flash', tier: 'flash' },
+  { vendor: 'deepseek', modelId: 'deepseek-chat', label: 'Chat (V3)', tier: 'base' },
+  { vendor: 'deepseek', modelId: 'deepseek-reasoner', label: 'Reasoner (R1)', tier: 'reasoner' },
+  { vendor: 'claude', modelId: 'claude-sonnet-4-20250514', label: 'Sonnet 4', tier: 'pro' },
+  { vendor: 'claude', modelId: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', tier: 'flash' },
+  { vendor: 'claude', modelId: 'claude-opus-4-20250514', label: 'Opus 4', tier: 'pro' },
+  { vendor: 'gemini', modelId: 'gemini-2.0-flash', label: '2.0 Flash', tier: 'flash' },
+  { vendor: 'gemini', modelId: 'gemini-2.0-pro', label: '2.0 Pro', tier: 'pro' },
+];
+
+export interface Experiment {
+  id: string;
+  name: string;
+  /** null = global experiment (applies to all orgs). */
+  organizationId: string | null;
+  status: ExperimentStatus;
+  rolloutPercent: number;
+  minSampleSize: number;
+  controlStrategy: AuditStrategy;
+  treatmentStrategies: AuditStrategy[];
+  metricsWeights: MetricsWeights;
+  startedAt: string | null;
+  endedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** One observation per audited PR that hit a variant bucket. */
+export interface ExperimentRun {
+  id: string;
+  experimentId: string;
+  variantId: string;
+  auditId: string | null;
+  vendor: ModelVendor;
+  modelId: string;
+  strategySnapshot: AuditStrategy;
+  verdict: AuditVerdict | null;
+  complianceScore: number | null;
+  efficiencyScore: number | null;
+  coverageScore: number | null;
+  latencyMs: number | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  agreedWithInline: boolean | null;
+  parseOk: boolean | null;
+  /** GitHub "owner/repo" correlation key to the HITL review decision. */
+  repositoryFullName: string | null;
+  humanDecision: ReviewDecisionAction | null;
+  /** true on approve, false on revise, null on cancel/no judgment. */
+  humanAccepted: boolean | null;
+  revisionCount: number | null;
+  acceptedAt: string | null;
+  createdAt: string;
 }

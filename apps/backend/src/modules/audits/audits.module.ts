@@ -5,6 +5,7 @@ import { AuditsService } from './audits.service';
 import { AuditsController } from './audits.controller';
 import { AuditProcessor } from './audit.processor';
 import { SandboxService } from './sandbox.service';
+import { ExperimentsModule } from '../experiments/experiments.module';
 
 @Module({
   imports: [
@@ -12,6 +13,7 @@ import { SandboxService } from './sandbox.service';
     BullModule.registerQueue({
       name: 'audits',
     }),
+    ExperimentsModule,
   ],
   controllers: [AuditsController],
   providers: [AuditsService, AuditProcessor, SandboxService],

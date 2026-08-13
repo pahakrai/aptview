@@ -3,6 +3,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { randomUUID } from 'crypto';
 import type { ReviewJobData } from './review.processor';
+import { ExperimentsService } from '../experiments/experiments.service';
 
 /**
  * ReviewsService — Manages HITL review threads and state.
@@ -59,6 +60,7 @@ export class ReviewsService {
 
   constructor(
     @InjectQueue('reviews') private readonly reviewQueue: Queue,
+    private readonly experimentsService: ExperimentsService,
   ) {}
 
   setServer(server: { emit: (event: string, data: unknown) => void }) {
@@ -175,6 +177,15 @@ export class ReviewsService {
 
     await this.reviewQueue.add('review-revise', { threadId, feedback });
 
+    await this.experimentsService.recordHumanDecision({
+      threadId,
+      repositoryFullName: `${review.owner}/${review.repo}`,
+      prNumber: review.prNumber,
+      action: 'revise',
+      revisionCount: newCount,
+      note: feedback,
+    });
+
     if (this.webSocketServer) {
       this.webSocketServer.emit('review:status', {
         threadId, status: 'reviewing', revisionCount: newCount, remaining: MAX_REVISIONS - newCount,
@@ -198,6 +209,15 @@ export class ReviewsService {
 
     review.status = 'posting';
     this.reviews.set(threadId, review);
+
+    await this.experimentsService.recordHumanDecision({
+      threadId,
+      repositoryFullName: `${review.owner}/${review.repo}`,
+      prNumber: review.prNumber,
+      action: 'approve',
+      revisionCount: review.revisionCount,
+      note: notes,
+    });
 
     await this.reviewQueue.add('review-post', { threadId, notes, generateTests, testTypes });
   }
@@ -224,6 +244,14 @@ export class ReviewsService {
     if (!review) throw new Error(`Review ${threadId} not found`);
     review.status = 'cancelled';
     this.reviews.set(threadId, review);
+
+    await this.experimentsService.recordHumanDecision({
+      threadId,
+      repositoryFullName: `${review.owner}/${review.repo}`,
+      prNumber: review.prNumber,
+      action: 'cancel',
+      revisionCount: review.revisionCount,
+    });
   }
 
   /**

@@ -9,6 +9,7 @@ import {
   jsonb,
   pgEnum,
 } from 'drizzle-orm/pg-core';
+import type { AuditStrategy, MetricsWeights } from '@aigov/shared-types';
 
 // ============================================================================
 // Enums
@@ -54,6 +55,19 @@ export const developerRatingEnum = pgEnum('developer_rating', [
   'too_narrow',
   'just_right',
   'too_broad',
+]);
+
+export const experimentStatusEnum = pgEnum('experiment_status', [
+  'draft',
+  'running',
+  'paused',
+  'completed',
+]);
+
+export const reviewDecisionActionEnum = pgEnum('review_decision_action', [
+  'approve',
+  'revise',
+  'cancel',
 ]);
 
 // ============================================================================
@@ -306,5 +320,82 @@ export const oauthAuthorizationCodes = pgTable('oauth_authorization_codes', {
   redirectUri: varchar('redirect_uri', { length: 1024 }).notNull(),
   isUsed: boolean('is_used').default(false).notNull(),
   expiresAt: timestamp('expires_at').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+// ============================================================================
+// A/B Experiments — model & strategy evaluation (feature-flagged)
+// ============================================================================
+
+/**
+ * experiments — a feature-flagged A/B test: one control strategy vs N treatments.
+ * When no experiment is `running` (or EXPERIMENTS_ENABLED is off), the audit
+ * pipeline is completely unaffected.
+ */
+export const experiments = pgTable('experiments', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  name: varchar('name', { length: 255 }).notNull(),
+  organizationId: uuid('organization_id')
+    .references(() => organizations.id, { onDelete: 'cascade' }), // null = global experiment
+  status: experimentStatusEnum('status').notNull().default('draft'),
+  rolloutPercent: integer('rollout_percent').default(0).notNull(),
+  minSampleSize: integer('min_sample_size').default(50).notNull(),
+  controlStrategy: jsonb('control_strategy').$type<AuditStrategy>().notNull(),
+  treatmentStrategies: jsonb('treatment_strategies')
+    .$type<AuditStrategy[]>()
+    .default([])
+    .notNull(),
+  metricsWeights: jsonb('metrics_weights').$type<MetricsWeights>().notNull(),
+  startedAt: timestamp('started_at'),
+  endedAt: timestamp('ended_at'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+/**
+ * experiment_runs — one observation per audited PR that hit a variant bucket.
+ * Denormalized `vendor` + `modelId` columns power the hierarchical report.
+ */
+export const experimentRuns = pgTable('experiment_runs', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  experimentId: uuid('experiment_id')
+    .notNull()
+    .references(() => experiments.id, { onDelete: 'cascade' }),
+  variantId: varchar('variant_id', { length: 50 }).notNull(),
+  auditId: uuid('audit_id').references(() => aiAudits.id, { onDelete: 'set null' }),
+  vendor: varchar('vendor', { length: 50 }).notNull(),
+  modelId: varchar('model_id', { length: 100 }).notNull(),
+  repositoryFullName: varchar('repository_full_name', { length: 512 }),
+  strategySnapshot: jsonb('strategy_snapshot').$type<AuditStrategy>().notNull(),
+  verdict: auditVerdictEnum('verdict'),
+  complianceScore: integer('compliance_score'),
+  efficiencyScore: integer('efficiency_score'),
+  coverageScore: integer('coverage_score'),
+  latencyMs: integer('latency_ms'),
+  promptTokens: integer('prompt_tokens'),
+  completionTokens: integer('completion_tokens'),
+  agreedWithInline: boolean('agreed_with_inline'),
+  parseOk: boolean('parse_ok'),
+  humanDecision: reviewDecisionActionEnum('human_decision'),
+  humanAccepted: boolean('human_accepted'),
+  revisionCount: integer('revision_count'),
+  acceptedAt: timestamp('accepted_at'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+/**
+ * review_decisions — durable record of each human code-reviewer decision
+ * (approve / revise / cancel) on a HITL review. Correlates to experiment_runs
+ * via (repository_full_name, pr_number) so reviewer acceptance becomes an
+ * A/B evaluation metric.
+ */
+export const reviewDecisions = pgTable('review_decisions', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  threadId: varchar('thread_id', { length: 255 }).notNull(),
+  prNumber: integer('pr_number').notNull(),
+  repositoryFullName: varchar('repository_full_name', { length: 512 }).notNull(),
+  action: reviewDecisionActionEnum('action').notNull(),
+  revisionCount: integer('revision_count').default(0).notNull(),
+  note: text('note'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });

@@ -7,6 +7,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
 import { RepositoriesModule } from './modules/repositories/repositories.module';
 import { AuditsModule } from './modules/audits/audits.module';
+import { ExperimentsModule } from './modules/experiments/experiments.module';
 import { DecompositionModule } from './modules/decomposition/decomposition.module';
 import { StandardsModule } from './modules/standards/standards.module';
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
@@ -41,6 +42,7 @@ import { HealthController } from './modules/health.controller';
     OrganizationsModule,
     RepositoriesModule,
     AuditsModule,
+    ExperimentsModule,
     DecompositionModule,
     StandardsModule,
     WebhooksModule,

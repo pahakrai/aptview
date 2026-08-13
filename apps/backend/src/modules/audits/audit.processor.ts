@@ -5,9 +5,16 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { db } from '../../database/client';
 import { aiAudits, scopeViolations, codeGuidelines } from '../../database/schema';
 import { eq } from 'drizzle-orm';
-import { AuditRequest, AuditVerdict } from '@aigov/shared-types';
+import {
+  AuditRequest,
+  AuditVerdict,
+  AuditStrategy,
+  PromptVariant,
+} from '@aigov/shared-types';
 import { SandboxService } from './sandbox.service';
 import { formatChangedFilesForPrompt } from './diff-parser';
+import { callDeepSeekChat } from './llm-deepseek';
+import { ExperimentsService, ResolvedArm } from '../experiments/experiments.service';
 
 /**
  * AuditProcessor — BullMQ worker for code review jobs.
@@ -33,6 +40,19 @@ interface ViolationEntry {
   match: string;
 }
 
+/** Normalized result of any audit engine, used to feed experiment runs. */
+interface AuditOutcome {
+  auditId: string;
+  verdict: AuditVerdict;
+  complianceScore: number | null;
+  efficiencyScore: number | null;
+  coverageScore: number | null;
+  latencyMs: number;
+  promptTokens?: number;
+  completionTokens?: number;
+  parseOk?: boolean;
+}
+
 @Processor('audits')
 export class AuditProcessor extends WorkerHost {
   private readonly auditMode: 'inline' | 'sandbox' | 'sdk';
@@ -40,6 +60,7 @@ export class AuditProcessor extends WorkerHost {
   constructor(
     private readonly sandboxService: SandboxService,
     private readonly configService: ConfigService,
+    private readonly experimentsService: ExperimentsService,
   ) {
     super();
     const mode = this.configService.get<string>('AUDIT_MODE');
@@ -49,9 +70,106 @@ export class AuditProcessor extends WorkerHost {
   }
 
   async process(job: Job<AuditRequest>): Promise<{ auditId: string }> {
+    // Feature-flagged experiment routing. Resolves a deterministic arm
+    // (control vs treatment); otherwise the production path is unchanged.
+    const arm = await this.experimentsService.resolveArm(
+      job.data.organizationId,
+      job.data.prNumber,
+      job.data.repositoryFullName,
+    );
+
+    if (arm) {
+      const outcome = await this.processWithStrategy(job, arm);
+      await this.experimentsService.recordRun({
+        experimentId: arm.experimentId,
+        variantId: arm.variantId,
+        auditId: outcome.auditId,
+        prNumber: job.data.prNumber,
+        repositoryFullName: job.data.repositoryFullName ?? null,
+        strategy: arm.strategy,
+        verdict: outcome.verdict,
+        complianceScore: outcome.complianceScore,
+        efficiencyScore: outcome.efficiencyScore,
+        coverageScore: outcome.coverageScore,
+        latencyMs: outcome.latencyMs,
+        promptTokens: outcome.promptTokens,
+        completionTokens: outcome.completionTokens,
+        agreedWithInline: await this.computeAgreedWithInline(job, outcome.verdict),
+        parseOk: outcome.parseOk ?? null,
+      });
+      return { auditId: outcome.auditId };
+    }
+
     if (this.auditMode === 'sandbox') return this.processViaSandbox(job);
     if (this.auditMode === 'sdk') return this.processViaSDK(job);
     return this.processInline(job);
+  }
+
+  /**
+   * Dispatch an audit to an engine based on the assigned experiment arm.
+   */
+  private async processWithStrategy(
+    job: Job<AuditRequest>,
+    arm: ResolvedArm,
+  ): Promise<AuditOutcome> {
+    switch (arm.strategy.engine) {
+      case 'deepseek':
+        return this.processViaDeepSeek(job, arm.strategy);
+      case 'sandbox':
+        return this.processViaSandbox(job);
+      case 'sdk':
+        return this.processViaSDK(job);
+      case 'inline':
+      default:
+        return this.processInline(job);
+    }
+  }
+
+  /**
+   * Does the arm's verdict agree with the deterministic inline (regex) engine?
+   * Used as an inter-model agreement signal, distinct from human acceptance.
+   */
+  private async computeAgreedWithInline(
+    job: Job<AuditRequest>,
+    verdict: AuditVerdict,
+  ): Promise<boolean> {
+    return (await this.computeInlineVerdict(job)) === verdict;
+  }
+
+  /**
+   * Run the same guideline-pattern verdict logic as the inline engine,
+   * without persisting an audit row.
+   */
+  private async computeInlineVerdict(
+    job: Job<AuditRequest>,
+  ): Promise<AuditVerdict> {
+    const guidelines = await db
+      .select()
+      .from(codeGuidelines)
+      .where(eq(codeGuidelines.organizationId, job.data.organizationId));
+
+    const lines = job.data.diffContent.split('\n');
+    let errorCount = 0;
+    let warningCount = 0;
+
+    for (const guideline of guidelines) {
+      if (!guideline.isEnabled) continue;
+      try {
+        const pattern = new RegExp(guideline.pattern, 'gi');
+        for (const line of lines) {
+          if (pattern.exec(line)) {
+            if (guideline.severity === 'error') errorCount += 1;
+            else if (guideline.severity === 'warning') warningCount += 1;
+          }
+        }
+      } catch {
+        // Skip invalid regex patterns.
+      }
+    }
+
+    if (errorCount > 0) return AuditVerdict.FAIL;
+    if (warningCount > 0) return AuditVerdict.WARNING;
+    return AuditVerdict.PASS;
   }
 
   // =========================================================================
@@ -60,7 +178,7 @@ export class AuditProcessor extends WorkerHost {
 
   private async processViaSandbox(
     job: Job<AuditRequest>,
-  ): Promise<{ auditId: string }> {
+  ): Promise<AuditOutcome> {
     const startTime = Date.now();
     const {
       organizationId,
@@ -156,7 +274,15 @@ export class AuditProcessor extends WorkerHost {
       `Sandbox audit ${audit.id}: ${verdict}, ${totalViolations}v, scores c=${complianceScore} e=${efficiencyScore} cov=${coverageScore}, ${durationMs}ms`,
     );
 
-    return { auditId: audit.id };
+    return {
+      auditId: audit.id,
+      verdict,
+      complianceScore,
+      efficiencyScore,
+      coverageScore,
+      latencyMs: durationMs,
+      parseOk: sv !== null,
+    };
   }
 
   // =========================================================================
@@ -165,7 +291,7 @@ export class AuditProcessor extends WorkerHost {
 
   private async processInline(
     job: Job<AuditRequest>,
-  ): Promise<{ auditId: string }> {
+  ): Promise<AuditOutcome> {
     const startTime = Date.now();
     const {
       organizationId,
@@ -299,7 +425,15 @@ export class AuditProcessor extends WorkerHost {
       `Audit ${audit.id}: ${verdict}, ${totalViolations}v, scores c=${complianceScore} e=${efficiencyScore}, ${durationMs}ms`,
     );
 
-    return { auditId: audit.id };
+    return {
+      auditId: audit.id,
+      verdict,
+      complianceScore,
+      efficiencyScore,
+      coverageScore,
+      latencyMs: durationMs,
+      parseOk: true,
+    };
   }
 
   // =========================================================================
@@ -308,7 +442,7 @@ export class AuditProcessor extends WorkerHost {
 
   private async processViaSDK(
     job: Job<AuditRequest>,
-  ): Promise<{ auditId: string }> {
+  ): Promise<AuditOutcome> {
     const startTime = Date.now();
     const {
       organizationId,
@@ -438,25 +572,145 @@ export class AuditProcessor extends WorkerHost {
       `SDK audit ${audit.id}: ${verdict}, ${totalViolations}v, scores c=${complianceScore} e=${efficiencyScore} cov=${coverageScore}, ${durationMs}ms`,
     );
 
-    return { auditId: audit.id };
+    return {
+      auditId: audit.id,
+      verdict,
+      complianceScore,
+      efficiencyScore,
+      coverageScore,
+      latencyMs: durationMs,
+      parseOk: sd !== null,
+    };
+  }
+
+  // =========================================================================
+  // DEEPSEEK MODE — direct DeepSeek chat API (additive engine)
+  // =========================================================================
+
+  private async processViaDeepSeek(
+    job: Job<AuditRequest>,
+    strategy: AuditStrategy,
+  ): Promise<AuditOutcome> {
+    const startTime = Date.now();
+    const {
+      organizationId,
+      repositoryId,
+      prNumber,
+      prTitle,
+      commitSha,
+      diffContent,
+      changedFiles = {},
+      taskDescription,
+    } = job.data;
+
+    const apiKey = this.configService.get<string>('DEEPSEEK_API_KEY');
+    if (!apiKey) {
+      throw new Error('DEEPSEEK_API_KEY is required for the deepseek engine');
+    }
+
+    // Load org guidelines for the prompt
+    const guidelines = await db
+      .select()
+      .from(codeGuidelines)
+      .where(eq(codeGuidelines.organizationId, organizationId));
+    const activeGuidelines = guidelines.filter((g) => g.isEnabled);
+
+    const userPrompt = this.buildPromptForStrategy(
+      {
+        prTitle,
+        diffContent,
+        changedFiles,
+        taskDescription,
+        guidelines: activeGuidelines,
+      },
+      strategy.promptVariant,
+    );
+
+    const { content, promptTokens, completionTokens } = await callDeepSeekChat({
+      apiKey,
+      model: strategy.modelId,
+      temperature: strategy.temperature,
+      maxTokens: strategy.maxTokens,
+      systemPrompt:
+        'You are a code reviewer for an automated governance platform.',
+      userPrompt,
+    });
+
+    const sd = this.parseAgentJson(content) as SandboxOutput | null;
+    const parseOk = sd !== null;
+    const durationMs = Date.now() - startTime;
+
+    // Extract scores (same shape as sandbox/SDK output)
+    const verdict: AuditVerdict = sd?.verdict ?? 'warning';
+    const totalViolations = sd?.totalViolations ?? 0;
+    const errorCount = sd?.errorCount ?? 0;
+    const warningCount = sd?.warningCount ?? 0;
+    const scopeCreepDetected = sd?.scopeCreepDetected ?? false;
+    const actualLoc = sd?.actualLoc ?? 0;
+    const estimatedLoc = sd?.estimatedLoc ?? 150;
+    const complianceScore = this.clampScore(sd?.complianceScore ?? null);
+    const efficiencyScore = this.clampScore(sd?.efficiencyScore ?? null);
+    const coverageScore = this.clampScore(sd?.coverageScore ?? null);
+
+    // Persist
+    const [audit] = await db
+      .insert(aiAudits)
+      .values({
+        organizationId,
+        repositoryId,
+        prNumber,
+        prTitle,
+        commitSha,
+        verdict,
+        totalViolations,
+        errorCount,
+        warningCount,
+        scopeCreepDetected,
+        complianceScore,
+        efficiencyScore,
+        coverageScore,
+        actualLoc,
+        estimatedLoc,
+        auditDurationMs: durationMs,
+        completedAt: new Date(),
+      })
+      .returning();
+
+    if (scopeCreepDetected) {
+      await db.insert(scopeViolations).values({
+        auditId: audit.id,
+        filePath: sd?.scopeFile ?? 'N/A',
+        violationType: 'loc_explosion',
+        description:
+          sd?.scopeDescription ??
+          `AI analysis detected scope creep. Actual LOC (${actualLoc}) vs estimated (${estimatedLoc}).`,
+        actualLoc,
+        expectedLoc: estimatedLoc,
+      });
+    }
+
+    console.log(
+      `DeepSeek audit ${audit.id}: ${verdict}, ${totalViolations}v, scores c=${complianceScore} e=${efficiencyScore} cov=${coverageScore}, ${durationMs}ms`,
+    );
+
+    return {
+      auditId: audit.id,
+      verdict,
+      complianceScore,
+      efficiencyScore,
+      coverageScore,
+      latencyMs: durationMs,
+      promptTokens,
+      completionTokens,
+      parseOk,
+    };
   }
 
   // =========================================================================
   // Prompt builder
   // =========================================================================
 
-  private buildAuditPrompt(params: {
-    prTitle: string;
-    diffContent: string;
-    changedFiles: Record<string, string>;
-    taskDescription?: string;
-    guidelines: Array<{
-      name: string;
-      description: string | null;
-      pattern: string;
-      severity: string;
-    }>;
-  }): string {
+  private buildAuditPrompt(params: AuditPromptParams): string {
     const {
       prTitle,
       diffContent,
@@ -529,6 +783,39 @@ export class AuditProcessor extends WorkerHost {
     ].join('\n');
   }
 
+  /**
+   * Build the audit prompt for a given prompt strategy variant.
+   * `baseline`/`json` use the current production prompt; `cot` and `few-shot`
+   * layer on top of it.
+   */
+  private buildPromptForStrategy(
+    params: AuditPromptParams,
+    variant: PromptVariant,
+  ): string {
+    const base = this.buildAuditPrompt(params);
+
+    switch (variant) {
+      case 'cot':
+        return base.replace(
+          '## Instructions',
+          '## Instructions\nThink step-by-step about each coding standard and requirement before assigning any score.\n',
+        );
+      case 'few-shot':
+        return (
+          base +
+          '\n\n## Worked Example\n' +
+          '{"verdict":"pass","totalViolations":0,"errorCount":0,"warningCount":0,' +
+          '"scopeCreepDetected":false,"actualLoc":40,"estimatedLoc":150,' +
+          '"scopeFile":null,"scopeDescription":null,"complianceScore":100,' +
+          '"efficiencyScore":100,"coverageScore":100,"summary":"Clean change, all standards followed."}\n'
+        );
+      case 'json':
+      case 'baseline':
+      default:
+        return base;
+    }
+  }
+
   // =========================================================================
   // Helpers
   // =========================================================================
@@ -575,4 +862,18 @@ interface SandboxOutput {
   efficiencyScore: number;
   coverageScore: number;
   summary: string;
+}
+
+/** Parameters for building the audit analysis prompt. */
+interface AuditPromptParams {
+  prTitle: string;
+  diffContent: string;
+  changedFiles: Record<string, string>;
+  taskDescription?: string;
+  guidelines: Array<{
+    name: string;
+    description: string | null;
+    pattern: string;
+    severity: string;
+  }>;
 }

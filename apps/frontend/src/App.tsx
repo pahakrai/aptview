@@ -1,9 +1,10 @@
 import { Routes, Route, Link, useLocation } from 'react-router-dom';
-import { Shield, LayoutDashboard, ScrollText, FileCheck, Settings } from 'lucide-react';
+import { Shield, LayoutDashboard, ScrollText, FileCheck, Settings, FlaskConical } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import AuditHistory from './pages/AuditHistory';
 import StandardsList from './pages/StandardsList';
 import SettingsPage from './pages/Settings';
+import Experiments from './pages/Experiments';
 
 function App() {
   const location = useLocation();
@@ -12,6 +13,7 @@ function App() {
     { to: '/', label: 'Dashboard', icon: LayoutDashboard },
     { to: '/audits', label: 'Audit History', icon: ScrollText },
     { to: '/standards', label: 'Standards', icon: FileCheck },
+    { to: '/experiments', label: 'Experiments', icon: FlaskConical },
   ];
 
   return (
@@ -79,6 +81,7 @@ function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/audits" element={<AuditHistory />} />
           <Route path="/standards" element={<StandardsList />} />
+          <Route path="/experiments" element={<Experiments />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </main>
