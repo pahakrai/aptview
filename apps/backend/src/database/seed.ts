@@ -4,7 +4,7 @@
 // Usage: yarn workspace backend db:seed
 
 import { db } from './client';
-import { organizations, repositories, codeGuidelines, apiKeys } from './schema';
+import { organizations, repositories, codeGuidelines, apiKeys, experiments } from './schema';
 import { eq } from 'drizzle-orm';
 
 async function seed() {
@@ -125,7 +125,67 @@ async function seedForOrg(orgId: string) {
     .onConflictDoNothing();
 
   console.log('  Created demo API key');
+
+  await seedExperiment();
+
   console.log('✅ Seed complete!');
+}
+
+async function seedExperiment() {
+  const name = 'DeepSeek V4 Pro vs Flash (demo)';
+  const [existing] = await db
+    .select({ id: experiments.id })
+    .from(experiments)
+    .where(eq(experiments.name, name))
+    .limit(1);
+
+  if (existing) {
+    console.log('  Demo experiment already exists, skipping.');
+    return;
+  }
+
+  await db.insert(experiments).values({
+    name,
+    organizationId: null, // global — matches webhook audits regardless of org
+    status: 'draft',
+    rolloutPercent: 100,
+    minSampleSize: 50,
+    controlStrategy: {
+      engine: 'deepseek',
+      vendor: 'deepseek',
+      modelId: 'deepseek-v4-pro',
+      temperature: 0.2,
+      maxTokens: 4000,
+      promptVariant: 'baseline',
+    },
+    treatmentStrategies: [
+      {
+        engine: 'deepseek',
+        vendor: 'deepseek',
+        modelId: 'deepseek-v4-flash',
+        temperature: 0.2,
+        maxTokens: 4000,
+        promptVariant: 'baseline',
+      },
+      {
+        engine: 'deepseek',
+        vendor: 'deepseek',
+        modelId: 'deepseek-reasoner',
+        temperature: 0.2,
+        maxTokens: 4000,
+        promptVariant: 'cot',
+      },
+    ],
+    metricsWeights: {
+      accuracy: 0.35,
+      quality: 0.35,
+      acceptance: 0.15,
+      speed: 0.075,
+      cost: 0.075,
+    },
+  });
+
+  console.log('  Created demo A/B experiment');
 }
 
 seed()

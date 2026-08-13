@@ -109,6 +109,103 @@ function composeScore(
 }
 
 /**
+ * Wilson score interval (95%) for a binomial proportion, e.g. acceptance rate.
+ * Returns [lower, upper] in 0..1, or null when there are no trials.
+ */
+function wilsonCI(successes: number, trials: number): [number, number] | null {
+  if (trials <= 0) return null;
+  const z = 1.96;
+  const p = successes / trials;
+  const denom = 1 + (z * z) / trials;
+  const center = (p + (z * z) / (2 * trials)) / denom;
+  const margin =
+    (z * Math.sqrt((p * (1 - p)) / trials + (z * z) / (4 * trials * trials))) /
+    denom;
+  return [Math.max(0, center - margin), Math.min(1, center + margin)];
+}
+
+/**
+ * Stage-1 pricing ($ per 1M tokens, input/output). Swap for a live pricing
+ * table before treating cost as authoritative.
+ */
+const MODEL_PRICING: Record<string, { input: number; output: number }> = {
+  'deepseek-v4-pro': { input: 0.4, output: 1.1 },
+  'deepseek-v4-flash': { input: 0.1, output: 0.3 },
+  'deepseek-chat': { input: 0.27, output: 1.1 },
+  'deepseek-reasoner': { input: 0.55, output: 2.19 },
+  'claude-sonnet-4-20250514': { input: 3, output: 15 },
+  'claude-haiku-4-5-20251001': { input: 0.8, output: 4 },
+  'claude-opus-4-20250514': { input: 15, output: 75 },
+  'gemini-2.0-flash': { input: 0.1, output: 0.4 },
+  'gemini-2.0-pro': { input: 1.25, output: 5 },
+};
+
+/** Cost of one run in USD, from token usage and per-model pricing. */
+function costUsdOf(
+  modelId: string,
+  promptTokens: number,
+  completionTokens: number,
+): number {
+  const price = MODEL_PRICING[modelId];
+  if (!price) return 0;
+  return (promptTokens * price.input + completionTokens * price.output) / 1_000_000;
+}
+
+function mean(values: number[]): number | null {
+  if (values.length === 0) return null;
+  return values.reduce((s, v) => s + v, 0) / values.length;
+}
+
+function sd(values: number[]): number | null {
+  if (values.length < 2) return null;
+  const m = mean(values) as number;
+  const variance =
+    values.reduce((s, v) => s + (v - m) ** 2, 0) / (values.length - 1);
+  return Math.sqrt(variance);
+}
+
+/** Normal-approx 95% CI for a mean, or null with <2 observations. */
+function normCI(values: number[]): [number, number] | null {
+  const m = mean(values);
+  const s = sd(values);
+  if (m === null || s === null) return null;
+  const margin = (1.96 * s) / Math.sqrt(values.length);
+  return [m - margin, m + margin];
+}
+
+/** Two-sided 95% verdict for a difference, given its standard error. */
+function deltaVerdict(
+  delta: number,
+  se: number,
+): 'better' | 'worse' | 'inconclusive' {
+  if (delta - 1.96 * se > 0) return 'better';
+  if (delta + 1.96 * se < 0) return 'worse';
+  return 'inconclusive';
+}
+
+type ExperimentRunRow = typeof experimentRuns.$inferSelect;
+
+interface ArmAccumulator {
+  variantId: string;
+  vendor: string;
+  modelId: string;
+  runs: ExperimentRunRow[];
+  samples: number;
+  decided: number;
+  accepted: number;
+  agreed: number;
+  agreedSamples: number;
+  parseOk: number;
+  compliance: number[];
+  efficiency: number[];
+  coverage: number[];
+  latency: number[];
+  promptTokens: number;
+  completionTokens: number;
+  costUsd: number;
+}
+
+/**
  * ExperimentsService — feature-flag + A/B experiment management.
  *
  * The whole thing is inert unless `EXPERIMENTS_ENABLED=true` AND an experiment
@@ -186,6 +283,22 @@ export class ExperimentsService {
    * already arrived, backfills that acceptance signal too.
    */
   async recordRun(input: RecordRunInput): Promise<void> {
+    // One observation per PR — ignore re-audits of an already-bucketed PR.
+    if (input.repositoryFullName) {
+      const [existing] = await db
+        .select({ id: experimentRuns.id })
+        .from(experimentRuns)
+        .where(
+          and(
+            eq(experimentRuns.experimentId, input.experimentId),
+            eq(experimentRuns.repositoryFullName, input.repositoryFullName),
+            eq(experimentRuns.prNumber, input.prNumber),
+          ),
+        )
+        .limit(1);
+      if (existing) return;
+    }
+
     let humanDecision: ReviewDecisionAction | null = null;
     let humanAccepted: boolean | null = null;
     let revisionCount: number | null = null;
@@ -280,113 +393,141 @@ export class ExperimentsService {
       .from(experimentRuns)
       .where(eq(experimentRuns.experimentId, id));
 
-    const arms = new Map<
-      string,
-      {
-        variantId: string;
-        vendor: string;
-        modelId: string;
-        samples: number;
-        decided: number;
-        accepted: number;
-        agreedSamples: number;
-        agreed: number;
-        parseOk: number;
-        complianceSum: number;
-        complianceSamples: number;
-        efficiencySum: number;
-        efficiencySamples: number;
-        coverageSum: number;
-        coverageSamples: number;
-        latencySum: number;
-        latencySamples: number;
-        promptTokens: number;
-        completionTokens: number;
-      }
-    >();
-
+    // Group runs by variant.
+    const groups = new Map<string, ExperimentRunRow[]>();
     for (const r of runs) {
-      const existing = arms.get(r.variantId);
-      const arm = existing ?? {
-        variantId: r.variantId,
-        vendor: r.vendor,
-        modelId: r.modelId,
-        samples: 0,
-        decided: 0,
-        accepted: 0,
-        agreedSamples: 0,
-        agreed: 0,
-        parseOk: 0,
-        complianceSum: 0,
-        complianceSamples: 0,
-        efficiencySum: 0,
-        efficiencySamples: 0,
-        coverageSum: 0,
-        coverageSamples: 0,
-        latencySum: 0,
-        latencySamples: 0,
-        promptTokens: 0,
-        completionTokens: 0,
-      };
-
-      arm.samples += 1;
-
-      if (r.humanAccepted !== null && r.humanAccepted !== undefined) {
-        arm.decided += 1;
-        if (r.humanAccepted) arm.accepted += 1;
-      }
-      if (r.agreedWithInline !== null && r.agreedWithInline !== undefined) {
-        arm.agreedSamples += 1;
-        if (r.agreedWithInline) arm.agreed += 1;
-      }
-      if (r.parseOk) arm.parseOk += 1;
-      if (r.complianceScore !== null && r.complianceScore !== undefined) {
-        arm.complianceSum += r.complianceScore;
-        arm.complianceSamples += 1;
-      }
-      if (r.efficiencyScore !== null && r.efficiencyScore !== undefined) {
-        arm.efficiencySum += r.efficiencyScore;
-        arm.efficiencySamples += 1;
-      }
-      if (r.coverageScore !== null && r.coverageScore !== undefined) {
-        arm.coverageSum += r.coverageScore;
-        arm.coverageSamples += 1;
-      }
-      if (r.latencyMs !== null && r.latencyMs !== undefined) {
-        arm.latencySum += r.latencyMs;
-        arm.latencySamples += 1;
-      }
-      arm.promptTokens += r.promptTokens ?? 0;
-      arm.completionTokens += r.completionTokens ?? 0;
-
-      arms.set(r.variantId, arm);
+      const list = groups.get(r.variantId) ?? [];
+      list.push(r);
+      groups.set(r.variantId, list);
     }
 
-    const avg = (sum: number, n: number): number | null => (n > 0 ? sum / n : null);
+    const accumulators: ArmAccumulator[] = [];
+    for (const [variantId, rs] of groups) {
+      const acc: ArmAccumulator = {
+        variantId,
+        vendor: rs[0].vendor,
+        modelId: rs[0].modelId,
+        runs: rs,
+        samples: rs.length,
+        decided: 0,
+        accepted: 0,
+        agreed: 0,
+        agreedSamples: 0,
+        parseOk: 0,
+        compliance: [],
+        efficiency: [],
+        coverage: [],
+        latency: [],
+        promptTokens: 0,
+        completionTokens: 0,
+        costUsd: 0,
+      };
+      for (const r of rs) {
+        if (r.humanAccepted !== null && r.humanAccepted !== undefined) {
+          acc.decided += 1;
+          if (r.humanAccepted) acc.accepted += 1;
+        }
+        if (r.agreedWithInline !== null && r.agreedWithInline !== undefined) {
+          acc.agreedSamples += 1;
+          if (r.agreedWithInline) acc.agreed += 1;
+        }
+        if (r.parseOk) acc.parseOk += 1;
+        if (r.complianceScore !== null && r.complianceScore !== undefined) {
+          acc.compliance.push(r.complianceScore);
+        }
+        if (r.efficiencyScore !== null && r.efficiencyScore !== undefined) {
+          acc.efficiency.push(r.efficiencyScore);
+        }
+        if (r.coverageScore !== null && r.coverageScore !== undefined) {
+          acc.coverage.push(r.coverageScore);
+        }
+        if (r.latencyMs !== null && r.latencyMs !== undefined) {
+          acc.latency.push(r.latencyMs);
+        }
+        acc.promptTokens += r.promptTokens ?? 0;
+        acc.completionTokens += r.completionTokens ?? 0;
+        acc.costUsd += costUsdOf(
+          acc.modelId,
+          r.promptTokens ?? 0,
+          r.completionTokens ?? 0,
+        );
+      }
+      accumulators.push(acc);
+    }
 
-    const armList = Array.from(arms.values());
-
-    // Cross-arm baselines for speed/cost normalization (lower is better).
-    const maxLatency = armList.reduce(
-      (m, a) => Math.max(m, avg(a.latencySum, a.latencySamples) ?? 0),
+    // Cross-arm normalization baselines (lower is better).
+    const maxLatency = accumulators.reduce(
+      (m, a) => Math.max(m, mean(a.latency) ?? 0),
       1,
     );
-    const maxTokens = armList.reduce(
+    const maxCostUsd = accumulators.reduce((m, a) => Math.max(m, a.costUsd), 1);
+    const maxTokens = accumulators.reduce(
       (m, a) => Math.max(m, a.promptTokens + a.completionTokens),
       1,
     );
+    const useCostUsd = maxCostUsd > 0;
 
-    const scored = armList.map((a) => {
+    const scored = accumulators.map((a) => {
       const acceptanceRate = a.decided > 0 ? a.accepted / a.decided : null;
       const agreedRate = a.agreedSamples > 0 ? a.agreed / a.agreedSamples : null;
       const parseOkRate = a.samples > 0 ? a.parseOk / a.samples : null;
-      const avgCompliance = avg(a.complianceSum, a.complianceSamples);
-      const avgEfficiency = avg(a.efficiencySum, a.efficiencySamples);
-      const avgCoverage = avg(a.coverageSum, a.coverageSamples);
-      const avgLatencyMs = avg(a.latencySum, a.latencySamples);
+      const avgCompliance = mean(a.compliance);
+      const avgEfficiency = mean(a.efficiency);
+      const avgCoverage = mean(a.coverage);
+      const avgLatencyMs = mean(a.latency);
       const totalTokens = a.promptTokens + a.completionTokens;
+      const avgCostUsd = a.samples > 0 ? a.costUsd / a.samples : 0;
 
-      // Business-decision sub-scores, normalized 0–100.
+      // Per-run composite so the composite carries a real confidence interval.
+      const compositeVals: number[] = [];
+      for (const r of a.runs) {
+        const runAgreed = r.agreedWithInline;
+        const accuracy =
+          r.complianceScore ??
+          (runAgreed !== null && runAgreed !== undefined
+            ? runAgreed
+              ? 100
+              : 0
+            : null);
+        const qualityParts = [r.efficiencyScore, r.coverageScore].filter(
+          (v): v is number => v !== null && v !== undefined,
+        );
+        const quality =
+          qualityParts.length > 0
+            ? qualityParts.reduce((s, v) => s + v, 0) / qualityParts.length
+            : null;
+        const acceptance =
+          r.humanAccepted !== null && r.humanAccepted !== undefined
+            ? r.humanAccepted
+              ? 100
+              : 0
+            : null;
+        const speed =
+          r.latencyMs !== null
+            ? clamp01(1 - r.latencyMs / maxLatency) * 100
+            : null;
+        const runTokens = (r.promptTokens ?? 0) + (r.completionTokens ?? 0);
+        const runCost = costUsdOf(
+          a.modelId,
+          r.promptTokens ?? 0,
+          r.completionTokens ?? 0,
+        );
+        const cost = useCostUsd
+          ? clamp01(1 - runCost / maxCostUsd) * 100
+          : clamp01(1 - runTokens / maxTokens) * 100;
+
+        const c = composeScore(
+          { accuracy, quality, acceptance, speed, cost },
+          exp.metricsWeights,
+        );
+        if (c !== null) compositeVals.push(c);
+      }
+
+      const composite = mean(compositeVals);
+      const compositeCI = normCI(compositeVals);
+      const compositeSd = sd(compositeVals);
+
+      // Arm-level sub-scores for display.
       const accuracy =
         avgCompliance ?? (agreedRate !== null ? agreedRate * 100 : null);
       const qualityParts = [avgEfficiency, avgCoverage].filter(
@@ -398,45 +539,123 @@ export class ExperimentsService {
           : null;
       const acceptance = acceptanceRate !== null ? acceptanceRate * 100 : null;
       const speed =
-        avgLatencyMs !== null ? clamp01(1 - avgLatencyMs / maxLatency) * 100 : null;
-      const cost = clamp01(1 - totalTokens / maxTokens) * 100;
+        avgLatencyMs !== null
+          ? clamp01(1 - avgLatencyMs / maxLatency) * 100
+          : null;
+      const cost = useCostUsd
+        ? clamp01(1 - a.costUsd / maxCostUsd) * 100
+        : clamp01(1 - totalTokens / maxTokens) * 100;
 
-      const subScores = { accuracy, quality, acceptance, speed, cost };
-      const composite = composeScore(subScores, exp.metricsWeights);
+      const powered = a.samples >= exp.minSampleSize;
+      const acceptanceCI =
+        acceptanceRate !== null ? wilsonCI(a.accepted, a.decided) : null;
 
       return {
         variantId: a.variantId,
         vendor: a.vendor,
         modelId: a.modelId,
         samples: a.samples,
+        decided: a.decided,
+        undecided: a.samples - a.decided,
         acceptanceRate,
+        acceptanceCI,
         agreedWithInlineRate: agreedRate,
         parseOkRate,
         avgCompliance,
         avgEfficiency,
         avgCoverage,
         avgLatencyMs,
+        complianceCI: normCI(a.compliance),
+        efficiencyCI: normCI(a.efficiency),
+        coverageCI: normCI(a.coverage),
+        latencyCI: normCI(a.latency),
         totalPromptTokens: a.promptTokens,
         totalCompletionTokens: a.completionTokens,
-        subScores,
+        totalCostUsd: a.costUsd,
+        avgCostUsd,
+        subScores: { accuracy, quality, acceptance, speed, cost },
         composite,
+        compositeCI,
+        compositeN: compositeVals.length,
+        compositeSd,
+        powered,
       };
     });
 
-    const withSamples = scored.filter((s) => s.samples > 0);
-    const winner = withSamples.reduce<(typeof withSamples)[number] | null>(
-      (best, s) =>
-        s.composite !== null &&
-        (best === null || best.composite === null || s.composite > best.composite)
-          ? s
-          : best,
+    const control = scored.find((s) => s.variantId === 'control');
+    const arms = scored.map((s) => {
+      if (!control || s.variantId === 'control') {
+        return { ...s, vsControl: null };
+      }
+
+      const compositeDelta =
+        s.composite !== null && control.composite !== null
+          ? s.composite - control.composite
+          : null;
+      const seComposite =
+        s.compositeSd !== null &&
+        control.compositeSd !== null &&
+        s.compositeN > 0 &&
+        control.compositeN > 0
+          ? Math.sqrt(
+              (s.compositeSd ** 2) / s.compositeN +
+                (control.compositeSd ** 2) / control.compositeN,
+            )
+          : null;
+      const compositeVerdict =
+        compositeDelta !== null && seComposite !== null
+          ? deltaVerdict(compositeDelta, seComposite)
+          : 'inconclusive';
+
+      const acceptanceDelta =
+        s.acceptanceRate !== null && control.acceptanceRate !== null
+          ? s.acceptanceRate - control.acceptanceRate
+          : null;
+      const seAcceptance =
+        s.acceptanceRate !== null && control.acceptanceRate !== null
+          ? Math.sqrt(
+              (s.acceptanceRate * (1 - s.acceptanceRate)) /
+                Math.max(1, s.decided) +
+                (control.acceptanceRate * (1 - control.acceptanceRate)) /
+                  Math.max(1, control.decided),
+            )
+          : null;
+      const acceptanceVerdict =
+        acceptanceDelta !== null && seAcceptance !== null
+          ? deltaVerdict(acceptanceDelta, seAcceptance)
+          : 'inconclusive';
+
+      return {
+        ...s,
+        vsControl: {
+          compositeDelta,
+          compositeVerdict,
+          acceptanceDelta,
+          acceptanceVerdict,
+        },
+      };
+    });
+
+    const poweredArms = arms.filter((s) => s.powered && s.composite !== null);
+    const winner = poweredArms.reduce<(typeof poweredArms)[number] | null>(
+      (best, s) => {
+        if (s.composite === null) return best;
+        if (
+          best === null ||
+          best.composite === null ||
+          s.composite > best.composite
+        ) {
+          return s;
+        }
+        return best;
+      },
       null,
     );
 
     return {
       experiment: exp,
       metricsWeights: exp.metricsWeights,
-      arms: scored,
+      arms,
       recommendation: winner
         ? {
             variantId: winner.variantId,

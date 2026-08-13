@@ -134,10 +134,19 @@ export class WebhooksService {
     // 3. Check if this target branch should be reviewed
     // -----------------------------------------------------------------------
     const repoRecord = await db
-      .select({ reviewBranches: repositories.reviewBranches })
+      .select({
+        id: repositories.id,
+        organizationId: repositories.organizationId,
+        reviewBranches: repositories.reviewBranches,
+      })
       .from(repositories)
       .where(eq(repositories.fullName, fullName))
       .limit(1);
+
+    const repositoryId =
+      repoRecord[0]?.id ?? '00000000-0000-0000-0000-000000000000';
+    const organizationId =
+      repoRecord[0]?.organizationId ?? '00000000-0000-0000-0000-000000000000';
 
     const allowedBranches: string[] = repoRecord[0]?.reviewBranches || ['dev'];
 
@@ -219,8 +228,8 @@ export class WebhooksService {
     // 4. Enqueue scoring audit (fire-and-forget)
     // -----------------------------------------------------------------------
     const auditResult = await this.auditsService.enqueueAudit({
-      organizationId: '00000000-0000-0000-0000-000000000000',
-      repositoryId: '00000000-0000-0000-0000-000000000000',
+      organizationId,
+      repositoryId,
       repositoryFullName: fullName,
       prNumber,
       prTitle,
@@ -243,7 +252,7 @@ export class WebhooksService {
     const guidelines = await db
       .select()
       .from(codeGuidelines)
-      .where(eq(codeGuidelines.organizationId, '00000000-0000-0000-0000-000000000000'));
+      .where(eq(codeGuidelines.organizationId, organizationId));
     const activeGuidelines = guidelines.filter((g) => g.isEnabled);
     const guidelinesText = activeGuidelines.length > 0
       ? activeGuidelines.map((g) =>

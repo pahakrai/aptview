@@ -7,6 +7,7 @@ import {
   integer,
   boolean,
   jsonb,
+  index,
   pgEnum,
 } from 'drizzle-orm/pg-core';
 import type { AuditStrategy, MetricsWeights } from '@aigov/shared-types';
@@ -381,7 +382,10 @@ export const experimentRuns = pgTable('experiment_runs', {
   revisionCount: integer('revision_count'),
   acceptedAt: timestamp('accepted_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-});
+}, (table) => [
+  index('experiment_runs_experiment_idx').on(table.experimentId),
+  index('experiment_runs_repo_pr_idx').on(table.repositoryFullName, table.prNumber),
+]);
 
 /**
  * review_decisions — durable record of each human code-reviewer decision
@@ -398,4 +402,6 @@ export const reviewDecisions = pgTable('review_decisions', {
   revisionCount: integer('revision_count').default(0).notNull(),
   note: text('note'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-});
+}, (table) => [
+  index('review_decisions_repo_pr_idx').on(table.repositoryFullName, table.prNumber),
+]);

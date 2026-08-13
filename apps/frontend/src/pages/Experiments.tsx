@@ -8,6 +8,10 @@ import {
   Clock,
   Coins,
   Layers,
+  Plus,
+  Play,
+  Pause,
+  CheckCircle2,
 } from 'lucide-react';
 import type { Experiment, AuditStrategy, MetricsWeights } from '@aigov/shared-types';
 import api from '../lib/api';
@@ -29,6 +33,8 @@ interface ExperimentArm {
   vendor: string;
   modelId: string;
   samples: number;
+  decided: number;
+  undecided: number;
   acceptanceRate: number | null;
   agreedWithInlineRate: number | null;
   parseOkRate: number | null;
@@ -38,8 +44,23 @@ interface ExperimentArm {
   avgLatencyMs: number | null;
   totalPromptTokens: number;
   totalCompletionTokens: number;
+  totalCostUsd: number;
+  avgCostUsd: number;
   subScores: SubScores;
   composite: number | null;
+  compositeCI: [number, number] | null;
+  complianceCI: [number, number] | null;
+  efficiencyCI: [number, number] | null;
+  coverageCI: [number, number] | null;
+  latencyCI: [number, number] | null;
+  powered: boolean;
+  acceptanceCI: [number, number] | null;
+  vsControl: {
+    compositeDelta: number | null;
+    compositeVerdict: 'better' | 'worse' | 'inconclusive';
+    acceptanceDelta: number | null;
+    acceptanceVerdict: 'better' | 'worse' | 'inconclusive';
+  } | null;
 }
 
 interface ExperimentReport {
@@ -68,12 +89,88 @@ const pct = (v: number | null | undefined, digits = 1): string =>
 const num = (v: number | null | undefined, digits = 0): string =>
   v === null || v === undefined ? '—' : v.toFixed(digits);
 
+const ci = (v: [number, number] | null | undefined, digits = 1): string =>
+  v ? `${v[0].toFixed(digits)}–${v[1].toFixed(digits)}` : '—';
+
+const money = (v: number | null | undefined): string =>
+  v === null || v === undefined ? '—' : `$${v.toFixed(3)}`;
+
+const verdictStyle = (v: 'better' | 'worse' | 'inconclusive' | null): string =>
+  v === 'better' ? 'badge-success' : v === 'worse' ? 'badge-danger' : 'badge-neutral';
+
+const DEFAULT_CONTROL: AuditStrategy = {
+  engine: 'deepseek',
+  vendor: 'deepseek',
+  modelId: 'deepseek-v4-pro',
+  temperature: 0.2,
+  maxTokens: 4000,
+  promptVariant: 'baseline',
+};
+
+const DEFAULT_TREATMENT: AuditStrategy = {
+  engine: 'deepseek',
+  vendor: 'deepseek',
+  modelId: 'deepseek-v4-flash',
+  temperature: 0.2,
+  maxTokens: 4000,
+  promptVariant: 'baseline',
+};
+
 export default function Experiments() {
   const [experiments, setExperiments] = useState<Experiment[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [report, setReport] = useState<ExperimentReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [reportLoading, setReportLoading] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newRollout, setNewRollout] = useState(100);
+  const [newMinSample, setNewMinSample] = useState(50);
+  const [creating, setCreating] = useState(false);
+
+  const refresh = () => {
+    api
+      .get<Experiment[]>('/experiments')
+      .then((res) => setExperiments(res.data))
+      .catch(() => {});
+  };
+
+  const createExperiment = async () => {
+    if (!newName.trim()) return;
+    setCreating(true);
+    try {
+      await api.post('/experiments', {
+        name: newName.trim(),
+        rolloutPercent: newRollout,
+        minSampleSize: newMinSample,
+        controlStrategy: DEFAULT_CONTROL,
+        treatmentStrategies: [DEFAULT_TREATMENT],
+        metricsWeights: {
+          accuracy: 0.35,
+          quality: 0.35,
+          acceptance: 0.15,
+          speed: 0.075,
+          cost: 0.075,
+        },
+      });
+      setNewName('');
+      refresh();
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const setStatus = async (id: string, status: string) => {
+    await api.patch(`/experiments/${id}`, { status });
+    refresh();
+    if (selectedId === id) {
+      setReportLoading(true);
+      api
+        .get<ExperimentReport>(`/experiments/${id}/report`)
+        .then((res) => setReport(res.data))
+        .catch(() => setReport(null))
+        .finally(() => setReportLoading(false));
+    }
+  };
 
   useEffect(() => {
     api
@@ -115,6 +212,53 @@ export default function Experiments() {
             review and reviewer acceptance.
           </p>
         </div>
+      </div>
+
+      {/* New experiment */}
+      <div className="card p-4 mb-6">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex-1 min-w-[200px]">
+            <label className="text-xs text-slate-500">Experiment name</label>
+            <input
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="e.g. DeepSeek V4 Pro vs Flash"
+              className="mt-1 w-full rounded-lg bg-surface-950 border border-slate-800 px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-slate-500">Rollout %</label>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              value={newRollout}
+              onChange={(e) => setNewRollout(Number(e.target.value))}
+              className="mt-1 w-24 rounded-lg bg-surface-950 border border-slate-800 px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-emerald-500"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-slate-500">Min sample</label>
+            <input
+              type="number"
+              min={1}
+              value={newMinSample}
+              onChange={(e) => setNewMinSample(Number(e.target.value))}
+              className="mt-1 w-24 rounded-lg bg-surface-950 border border-slate-800 px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-emerald-500"
+            />
+          </div>
+          <button
+            onClick={createExperiment}
+            disabled={creating || !newName.trim()}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Plus className="w-4 h-4" /> Create draft
+          </button>
+        </div>
+        <p className="text-xs text-slate-600 mt-2">
+          Creates a global draft: control <code>deepseek-v4-pro</code> vs treatment{' '}
+          <code>deepseek-v4-flash</code>. Customize arms via API.
+        </p>
       </div>
 
       {experiments.length === 0 ? (
@@ -172,7 +316,7 @@ export default function Experiments() {
             )}
 
             {!reportLoading && report && (
-              <ReportDetail report={report} />
+              <ReportDetail report={report} onStatusChange={setStatus} />
             )}
           </section>
         </div>
@@ -181,13 +325,55 @@ export default function Experiments() {
   );
 }
 
-function ReportDetail({ report }: { report: ExperimentReport }) {
+function ReportDetail({
+  report,
+  onStatusChange,
+}: {
+  report: ExperimentReport;
+  onStatusChange: (id: string, status: string) => void;
+}) {
   const { experiment: exp, metricsWeights, arms, recommendation } = report;
   const control = arms.find((a) => a.variantId === 'control');
   const treatments = arms.filter((a) => a.variantId !== 'control');
 
   return (
     <>
+      {/* Status controls */}
+      <div className="card p-4 flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-2">
+          <span className={`${STATUS_STYLES[exp.status] ?? 'badge-neutral'}`}>
+            {exp.status}
+          </span>
+          <span className="text-sm text-slate-400 font-medium">{exp.name}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          {exp.status !== 'running' && (
+            <button
+              onClick={() => onStatusChange(exp.id, 'running')}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium"
+            >
+              <Play className="w-3.5 h-3.5" /> Start
+            </button>
+          )}
+          {exp.status === 'running' && (
+            <button
+              onClick={() => onStatusChange(exp.id, 'paused')}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-medium"
+            >
+              <Pause className="w-3.5 h-3.5" /> Pause
+            </button>
+          )}
+          {exp.status !== 'completed' && (
+            <button
+              onClick={() => onStatusChange(exp.id, 'completed')}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-white text-xs font-medium"
+            >
+              <CheckCircle2 className="w-3.5 h-3.5" /> Complete
+            </button>
+          )}
+        </div>
+      </div>
+
       {/* Parameters */}
       <div className="card p-5">
         <div className="flex items-center gap-2 mb-4">
@@ -319,10 +505,16 @@ function ArmCard({
           <div className="flex items-center gap-2">
             <h3 className="font-semibold text-white">{arm.variantId}</h3>
             {isControl && <span className="badge-neutral">control</span>}
+            {!arm.powered && <span className="badge-warning">under min sample</span>}
             {delta !== null && (
               <span className={delta >= 0 ? 'badge-success' : 'badge-danger'}>
                 {delta >= 0 ? '+' : ''}
                 {delta.toFixed(1)} pts
+              </span>
+            )}
+            {arm.vsControl && arm.vsControl.compositeVerdict !== 'inconclusive' && (
+              <span className={verdictStyle(arm.vsControl.compositeVerdict)}>
+                {arm.vsControl.compositeVerdict}
               </span>
             )}
           </div>
@@ -336,6 +528,11 @@ function ArmCard({
           <p className="text-3xl font-bold text-emerald-400">
             {arm.composite === null ? '—' : arm.composite.toFixed(1)}
           </p>
+          {arm.compositeCI && (
+            <p className="text-xs text-slate-600 font-mono mt-0.5">
+              CI {ci(arm.compositeCI, 1)}
+            </p>
+          )}
         </div>
       </div>
 
@@ -351,6 +548,7 @@ function ArmCard({
       {/* Raw metrics */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5 pt-5 border-t border-slate-800">
         <MiniStat label="Accept rate" value={pct(arm.acceptanceRate === null ? null : arm.acceptanceRate * 100)} />
+        <MiniStat label="Accept 95% CI" value={arm.acceptanceCI ? `${pct(arm.acceptanceCI[0] * 100, 0)}–${pct(arm.acceptanceCI[1] * 100, 0)}` : '—'} />
         <MiniStat label="Agree w/ inline" value={pct(arm.agreedWithInlineRate === null ? null : arm.agreedWithInlineRate * 100)} />
         <MiniStat label="Parse OK" value={pct(arm.parseOkRate === null ? null : arm.parseOkRate * 100)} />
         <MiniStat label="Avg compliance" value={pct(arm.avgCompliance, 0)} />
@@ -358,6 +556,9 @@ function ArmCard({
         <MiniStat label="Avg coverage" value={pct(arm.avgCoverage, 0)} />
         <MiniStat label="Avg latency" value={arm.avgLatencyMs === null ? '—' : `${num(arm.avgLatencyMs, 0)}ms`} />
         <MiniStat label="Tokens (p/c)" value={`${num(arm.totalPromptTokens)}/${num(arm.totalCompletionTokens)}`} />
+        <MiniStat label="Cost / audit" value={money(arm.avgCostUsd)} />
+        <MiniStat label="Cost total" value={money(arm.totalCostUsd)} />
+        <MiniStat label="Decided / undecided" value={`${arm.decided} / ${arm.undecided}`} />
       </div>
     </div>
   );
