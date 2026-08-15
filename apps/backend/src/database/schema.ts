@@ -364,6 +364,7 @@ export const experimentRuns = pgTable('experiment_runs', {
     .references(() => experiments.id, { onDelete: 'cascade' }),
   variantId: varchar('variant_id', { length: 50 }).notNull(),
   auditId: uuid('audit_id').references(() => aiAudits.id, { onDelete: 'set null' }),
+  prNumber: integer('pr_number').notNull(),
   vendor: varchar('vendor', { length: 50 }).notNull(),
   modelId: varchar('model_id', { length: 100 }).notNull(),
   repositoryFullName: varchar('repository_full_name', { length: 512 }),

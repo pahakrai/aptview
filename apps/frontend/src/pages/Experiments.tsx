@@ -53,7 +53,7 @@ interface ExperimentArm {
   efficiencyCI: [number, number] | null;
   coverageCI: [number, number] | null;
   latencyCI: [number, number] | null;
-  powered: boolean;
+  minSampleReached: boolean;
   acceptanceCI: [number, number] | null;
   vsControl: {
     compositeDelta: number | null;
@@ -73,7 +73,10 @@ interface ExperimentReport {
     modelId: string;
     composite: number;
     samples: number;
+    compositeVerdict: 'better';
   } | null;
+  /** Methodology caveats that qualify how the numbers should be read. */
+  caveat: string | null;
 }
 
 const STATUS_STYLES: Record<string, string> = {
@@ -332,7 +335,7 @@ function ReportDetail({
   report: ExperimentReport;
   onStatusChange: (id: string, status: string) => void;
 }) {
-  const { experiment: exp, metricsWeights, arms, recommendation } = report;
+  const { experiment: exp, metricsWeights, arms, recommendation, caveat } = report;
   const control = arms.find((a) => a.variantId === 'control');
   const treatments = arms.filter((a) => a.variantId !== 'control');
 
@@ -420,7 +423,8 @@ function ReportDetail({
                 <span className="text-slate-400 font-normal"> · {recommendation.vendor}/{recommendation.modelId}</span>
               </p>
               <p className="text-sm text-slate-500">
-                Composite {recommendation.composite.toFixed(1)} · {recommendation.samples} samples
+                Composite {recommendation.composite.toFixed(1)} · {recommendation.samples} samples ·{' '}
+                <span className="text-emerald-400">significantly better vs control</span>
               </p>
             </div>
           </div>
@@ -438,6 +442,15 @@ function ReportDetail({
         <p className="text-xs text-slate-600">
           Δ shown against the control arm. Positive = treatment outperforms control.
         </p>
+      )}
+
+      {caveat && (
+        <div className="card p-4 border-slate-800">
+          <p className="text-xs text-slate-500 leading-relaxed">
+            <span className="font-semibold text-slate-400">Methodology note: </span>
+            {caveat}
+          </p>
+        </div>
       )}
     </>
   );
@@ -505,7 +518,7 @@ function ArmCard({
           <div className="flex items-center gap-2">
             <h3 className="font-semibold text-white">{arm.variantId}</h3>
             {isControl && <span className="badge-neutral">control</span>}
-            {!arm.powered && <span className="badge-warning">under min sample</span>}
+            {!arm.minSampleReached && <span className="badge-warning">under min sample</span>}
             {delta !== null && (
               <span className={delta >= 0 ? 'badge-success' : 'badge-danger'}>
                 {delta >= 0 ? '+' : ''}

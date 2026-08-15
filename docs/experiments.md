@@ -65,6 +65,10 @@ Assignment is a stable hash of `(repositoryFullName, prNumber)`, gated by
 same arm across pushes, so the human decision stays comparable. It also avoids
 the storage of a separate assignment table.
 
+When both an org-specific and a global experiment are running, the
+**org-specific** experiment wins — a newer global experiment never shadows an
+org-level decision.
+
 **Trade-off:** deterministic hashing is not cryptographically random, but for a
 developer-facing comparison it is unbiased enough and far simpler than a
 randomized-assignment registry.
@@ -136,8 +140,12 @@ acceptance, and a `better` / `worse` / `inconclusive` verdict relative to contro
 for both composite and acceptance.
 
 **Why:** a point estimate ("arm B is 2 points higher") is noise at small sample
-sizes. The CI and the significance verdict prevent a premature "winner." The
-winner is only selected from arms that have reached `minSampleSize`.
+sizes. The CI and the significance verdict prevent a premature "winner." A
+treatment is only recommended when it has **both** reached the configured
+per-arm sample target (`minSampleSize`) **and** its composite is
+significantly better than control at 95% (`compositeVerdict === 'better'`,
+not merely a higher mean). When no treatment qualifies, no recommendation is
+shown — the business answer is "keep control".
 
 ### 3.9 Cost in dollars, not tokens
 
@@ -150,10 +158,16 @@ cross-vendor cost comparison meaningful. The stage-1 prices are a hardcoded
 table and should be replaced with a live pricing source before cost is treated as
 authoritative.
 
+Runs whose model is **not in the pricing table contribute no cost signal**
+(null), rather than a perfect score — "unknown" is not "free". If no arm has a
+priced run at all, the cost sub-score falls back to token counts.
+
 ### 3.10 One observation per PR (dedupe)
 
 A PR re-audited after a push (`synchronize`) does **not** create a second
-`experiment_runs` row for the same `(experiment, repo, PR)`.
+`experiment_runs` row for the same `(experiment, repo, PR)`. The dedupe and
+the human-decision correlation are keyed on the PR number stored on each run
+(`experiment_runs.pr_number` + `repository_full_name`).
 
 **Why:** without this, hot PRs would be over-represented and skew every mean. One
 PR = one sample is the cleanest unit of observation for a review-quality test.
@@ -177,7 +191,10 @@ denominator honest.
 - `quality` = mean of avg `efficiencyScore` and avg `coverageScore`
 - `acceptance` = human accept rate × 100
 - `speed` = `1 − avgLatency / maxLatencyAcrossArms` (relative)
-- `cost` = `1 − costUsd / maxCostUsdAcrossArms` (relative; falls back to tokens)
+- `cost` = `1 − costUsd / maxCostUsdAcrossArms` (relative). Only **priced** runs
+  (models in the pricing table) contribute to the cost signal; unpriced runs are
+  excluded from this sub-score rather than scored as "free". When no arm has any
+  priced run, cost falls back to `1 − tokens / maxTokensAcrossArms`.
 
 ### Composite
 
@@ -199,15 +216,32 @@ Weighted average over available sub-scores with renormalized weights.
 
 ## 5. Running an experiment
 
-1. Set `EXPERIMENTS_ENABLED=true`.
-2. Create an experiment — `yarn db:seed` seeds a global
+1. Apply the schema — `experiment_runs.pr_number` (the dedupe and
+   human-decision correlation key) must exist: `yarn db:push` in dev, or run
+   the corresponding migration in prod.
+2. Set `EXPERIMENTS_ENABLED=true`.
+3. Create an experiment — `yarn db:seed` seeds a global
    `DeepSeek V4 Pro vs Flash (demo)`, or use the Experiments page / API.
-3. Set `status=running` and a `rolloutPercent` (Start button on the page).
-4. Drive PRs through the webhook; review decisions on the Experiments page.
+4. Set `status=running` and a `rolloutPercent` (Start button on the page).
+5. Drive PRs through the webhook; review decisions on the Experiments page.
 
 Webhook audits resolve the real `repositories` row by `fullName`, so org-scoped
 experiments work; a **global** experiment (`organization_id = null`) matches any
-org.
+org. When both exist, the org-specific experiment wins (see §3.2).
+
+### Report output (`GET /experiments/:id/report`)
+
+- Each arm reports its samples, sub-scores, composite with a 95% CI, raw
+  metrics, and `minSampleReached` — a configured sample-count target, not
+  statistical power.
+- Treatments also carry `vsControl` with `compositeVerdict` /
+  `acceptanceVerdict` (`better` / `worse` / `inconclusive`) and deltas.
+- `recommendation` is present **only** when a treatment is significantly
+  better than control at 95% and has reached the sample target; otherwise it is
+  `null` and the answer is "keep control".
+- `caveat` is a human-readable summary of the methodology limits (relative
+  baselines, sample-target-not-power, no multiple-comparison correction) and is
+  rendered on the Experiments page.
 
 ---
 
@@ -219,7 +253,18 @@ org.
 - **Acceptance has selection bias** — undecided PRs are excluded from the rate
   (but counted and shown as `undecided`).
 - **Speed/cost are relative within an experiment** — good for ranking arms, not
-  comparable across experiments.
+  comparable across experiments. The per-run normalization baseline is derived
+  from the data accumulated *so far*, so composite scores and their CIs drift
+  as more audits arrive. Treat the composite CI as a relative ranking, not a
+  fixed-property interval.
+- **No multiple-comparison correction** — each treatment is tested against
+  control at 95%, so with N treatments the family-wise false-positive rate
+  grows. The recommendation gates on significance, but treat "significantly
+  better" as screening evidence, not proof, until an exact test with
+  correction (or a pre-registered winner rule) is in place.
+- **Sample target ≠ statistical power** — `minSampleSize` is a configured
+  per-arm count that gates the winner, not a power computation (no effect
+  size / variance / alpha / beta).
 - **Pricing is a stage-1 table** — replace before making cost-driven decisions.
 - **No sequential stopping** — the experiment keeps collecting until manually
   paused/completed; `minSampleSize` gates the winner, not collection.
@@ -229,8 +274,26 @@ org.
 Treat the winner as a **final business decision** only after:
 
 1. Exact significance (t/Welch for means, two-proportion z for acceptance) on
-   top of the existing CIs.
+   top of the existing CIs — the composite verdict already uses a Welch-style
+   standard error, but a p-value with multiple-comparison handling is the
+   production-grade step.
 2. A live cost model (per-model $/1M tokens) replacing the hardcoded table.
 3. Sequential stopping or a pre-registered sample-size plan.
 4. A documented eligibility model for acceptance (e.g., track *why* a PR was
    never decided, not just *that* it was).
+
+---
+
+## 8. Revision history
+
+Behavioral changes to the experiment layer and where each is defined above:
+
+| Change | What changed | Defined in |
+|---|---|---|
+| **Winner gating** | A treatment is recommended only when it is *significantly better* than control at 95% (and reached the sample target). Previously the highest composite mean among sample-sufficient arms won even when the difference was within noise; now no recommendation = "keep control". | §3.8, §5 report output |
+| **Cost signal fix** | Unknown-model runs previously scored a perfect cost sub-score (the USD→tokens fallback was dead code). Unpriced runs now contribute **no** cost signal; the token fallback applies only when no run is priced. | §3.9, §4 |
+| **Org precedence** | An org-specific running experiment now wins over a global one regardless of creation order. | §3.2 |
+| **Schema fix** | `experiment_runs` gained the `pr_number` column that the dedupe, human-decision correlation, and index always referenced but the table never had. Apply with `yarn db:push` / migration. | §3.10, §5 step 1 |
+| **Naming** | The per-arm `powered` flag was renamed `minSampleReached` to make clear it is a configured sample count, not statistical power. | §5 report output |
+| **Methodology note** | The report now returns a `caveat` stating the limits (relative baselines, sample target ≠ power, no multiple-comparison correction), rendered on the Experiments page. | §5, §6 |
+| **Tests** | `experiment-stats.spec.ts` unit-tests bucketing, CIs, cost, composite renormalization, and the winner rule (`node --test apps/backend/src/modules/experiments/__tests__/experiment-stats.spec.ts`). | — |

@@ -426,6 +426,8 @@ export interface ExperimentRun {
   experimentId: string;
   variantId: string;
   auditId: string | null;
+  /** PR this observation belongs to — correlation key for human decisions. */
+  prNumber: number;
   vendor: ModelVendor;
   modelId: string;
   strategySnapshot: AuditStrategy;

@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { and, desc, eq, isNull, or } from 'drizzle-orm';
+import { and, desc, eq, isNull } from 'drizzle-orm';
 import { db } from '../../database/client';
 import { experimentRuns, experiments, reviewDecisions } from '../../database/schema';
 import type {
@@ -10,6 +10,19 @@ import type {
   MetricsWeights,
   ReviewDecisionAction,
 } from '@aigov/shared-types';
+import {
+  clamp01,
+  composeScore,
+  costUsdOf,
+  decisionToAccepted,
+  deltaVerdict,
+  hashBucket,
+  mean,
+  normCI,
+  sd,
+  selectWinner,
+  wilsonCI,
+} from './experiment-stats';
 
 export const DEFAULT_METRICS_WEIGHTS: MetricsWeights = {
   accuracy: 0.35,
@@ -63,126 +76,6 @@ export interface ReviewDecisionInput {
   note?: string | null;
 }
 
-/** Deterministic FNV-1a hash → 0..99 for stable, reproducible bucketing. */
-function hashBucket(key: string): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < key.length; i += 1) {
-    h ^= key.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return Math.abs(h) % 100;
-}
-
-/** Map a human decision to the `humanAccepted` boolean (null = no judgment). */
-function decisionToAccepted(action: ReviewDecisionAction): boolean | null {
-  if (action === 'approve') return true;
-  if (action === 'revise') return false;
-  return null;
-}
-
-/** Clamp a value into [0, 1]. */
-function clamp01(x: number): number {
-  return Math.min(1, Math.max(0, x));
-}
-
-/**
- * Weighted composite (0–100) over the available sub-scores. Weights are
- * renormalized over the components that actually have data, so a missing
- * signal (e.g. no human decisions yet) doesn't zero out the score.
- */
-function composeScore(
-  subs: Record<'accuracy' | 'quality' | 'acceptance' | 'speed' | 'cost', number | null>,
-  weights: MetricsWeights,
-): number | null {
-  let numerator = 0;
-  let denominator = 0;
-  for (const key of ['accuracy', 'quality', 'acceptance', 'speed', 'cost'] as const) {
-    const value = subs[key];
-    const weight = weights[key] ?? 0;
-    if (value === null || value === undefined || !Number.isFinite(value) || weight <= 0) {
-      continue;
-    }
-    numerator += value * weight;
-    denominator += weight;
-  }
-  return denominator > 0 ? numerator / denominator : null;
-}
-
-/**
- * Wilson score interval (95%) for a binomial proportion, e.g. acceptance rate.
- * Returns [lower, upper] in 0..1, or null when there are no trials.
- */
-function wilsonCI(successes: number, trials: number): [number, number] | null {
-  if (trials <= 0) return null;
-  const z = 1.96;
-  const p = successes / trials;
-  const denom = 1 + (z * z) / trials;
-  const center = (p + (z * z) / (2 * trials)) / denom;
-  const margin =
-    (z * Math.sqrt((p * (1 - p)) / trials + (z * z) / (4 * trials * trials))) /
-    denom;
-  return [Math.max(0, center - margin), Math.min(1, center + margin)];
-}
-
-/**
- * Stage-1 pricing ($ per 1M tokens, input/output). Swap for a live pricing
- * table before treating cost as authoritative.
- */
-const MODEL_PRICING: Record<string, { input: number; output: number }> = {
-  'deepseek-v4-pro': { input: 0.4, output: 1.1 },
-  'deepseek-v4-flash': { input: 0.1, output: 0.3 },
-  'deepseek-chat': { input: 0.27, output: 1.1 },
-  'deepseek-reasoner': { input: 0.55, output: 2.19 },
-  'claude-sonnet-4-20250514': { input: 3, output: 15 },
-  'claude-haiku-4-5-20251001': { input: 0.8, output: 4 },
-  'claude-opus-4-20250514': { input: 15, output: 75 },
-  'gemini-2.0-flash': { input: 0.1, output: 0.4 },
-  'gemini-2.0-pro': { input: 1.25, output: 5 },
-};
-
-/** Cost of one run in USD, from token usage and per-model pricing. */
-function costUsdOf(
-  modelId: string,
-  promptTokens: number,
-  completionTokens: number,
-): number {
-  const price = MODEL_PRICING[modelId];
-  if (!price) return 0;
-  return (promptTokens * price.input + completionTokens * price.output) / 1_000_000;
-}
-
-function mean(values: number[]): number | null {
-  if (values.length === 0) return null;
-  return values.reduce((s, v) => s + v, 0) / values.length;
-}
-
-function sd(values: number[]): number | null {
-  if (values.length < 2) return null;
-  const m = mean(values) as number;
-  const variance =
-    values.reduce((s, v) => s + (v - m) ** 2, 0) / (values.length - 1);
-  return Math.sqrt(variance);
-}
-
-/** Normal-approx 95% CI for a mean, or null with <2 observations. */
-function normCI(values: number[]): [number, number] | null {
-  const m = mean(values);
-  const s = sd(values);
-  if (m === null || s === null) return null;
-  const margin = (1.96 * s) / Math.sqrt(values.length);
-  return [m - margin, m + margin];
-}
-
-/** Two-sided 95% verdict for a difference, given its standard error. */
-function deltaVerdict(
-  delta: number,
-  se: number,
-): 'better' | 'worse' | 'inconclusive' {
-  if (delta - 1.96 * se > 0) return 'better';
-  if (delta + 1.96 * se < 0) return 'worse';
-  return 'inconclusive';
-}
-
 type ExperimentRunRow = typeof experimentRuns.$inferSelect;
 
 interface ArmAccumulator {
@@ -203,6 +96,7 @@ interface ArmAccumulator {
   promptTokens: number;
   completionTokens: number;
   costUsd: number;
+  pricedRuns: number;
 }
 
 /**
@@ -229,22 +123,34 @@ export class ExperimentsService {
   async resolveExperiment(organizationId: string) {
     if (!this.isEnabled()) return null;
 
-    const [exp] = await db
+    // Prefer the org's own running experiment over a global one; a newer
+    // global experiment must not shadow an org-level decision.
+    const [orgExp] = await db
       .select()
       .from(experiments)
       .where(
         and(
           eq(experiments.status, 'running'),
-          or(
-            isNull(experiments.organizationId),
-            eq(experiments.organizationId, organizationId),
-          ),
+          eq(experiments.organizationId, organizationId),
+        ),
+      )
+      .orderBy(desc(experiments.createdAt))
+      .limit(1);
+    if (orgExp) return orgExp;
+
+    const [globalExp] = await db
+      .select()
+      .from(experiments)
+      .where(
+        and(
+          eq(experiments.status, 'running'),
+          isNull(experiments.organizationId),
         ),
       )
       .orderBy(desc(experiments.createdAt))
       .limit(1);
 
-    return exp ?? null;
+    return globalExp ?? null;
   }
 
   /**
@@ -329,6 +235,7 @@ export class ExperimentsService {
       experimentId: input.experimentId,
       variantId: input.variantId,
       auditId: input.auditId,
+      prNumber: input.prNumber,
       vendor: input.strategy.vendor,
       modelId: input.strategy.modelId,
       repositoryFullName: input.repositoryFullName,
@@ -421,6 +328,7 @@ export class ExperimentsService {
         promptTokens: 0,
         completionTokens: 0,
         costUsd: 0,
+        pricedRuns: 0,
       };
       for (const r of rs) {
         if (r.humanAccepted !== null && r.humanAccepted !== undefined) {
@@ -446,11 +354,15 @@ export class ExperimentsService {
         }
         acc.promptTokens += r.promptTokens ?? 0;
         acc.completionTokens += r.completionTokens ?? 0;
-        acc.costUsd += costUsdOf(
-          acc.modelId,
+        const runCost = costUsdOf(
+          r.modelId,
           r.promptTokens ?? 0,
           r.completionTokens ?? 0,
         );
+        if (runCost !== null) {
+          acc.costUsd += runCost;
+          acc.pricedRuns += 1;
+        }
       }
       accumulators.push(acc);
     }
@@ -460,12 +372,18 @@ export class ExperimentsService {
       (m, a) => Math.max(m, mean(a.latency) ?? 0),
       1,
     );
-    const maxCostUsd = accumulators.reduce((m, a) => Math.max(m, a.costUsd), 1);
+    // Cost is compared in USD only when at least one priced run exists;
+    // otherwise we fall back to token counts. (Init the reduce with 0 — the
+    // previous 1 seed made this condition always true and the token fallback
+    // dead code.)
+    const pricedAnywhere = accumulators.some((a) => a.costUsd > 0);
+    const maxCostUsd = pricedAnywhere
+      ? accumulators.reduce((m, a) => Math.max(m, a.costUsd), 0)
+      : 0;
     const maxTokens = accumulators.reduce(
       (m, a) => Math.max(m, a.promptTokens + a.completionTokens),
       1,
     );
-    const useCostUsd = maxCostUsd > 0;
 
     const scored = accumulators.map((a) => {
       const acceptanceRate = a.decided > 0 ? a.accepted / a.decided : null;
@@ -476,7 +394,7 @@ export class ExperimentsService {
       const avgCoverage = mean(a.coverage);
       const avgLatencyMs = mean(a.latency);
       const totalTokens = a.promptTokens + a.completionTokens;
-      const avgCostUsd = a.samples > 0 ? a.costUsd / a.samples : 0;
+      const avgCostUsd = a.pricedRuns > 0 ? a.costUsd / a.pricedRuns : 0;
 
       // Per-run composite so the composite carries a real confidence interval.
       const compositeVals: number[] = [];
@@ -508,13 +426,18 @@ export class ExperimentsService {
             : null;
         const runTokens = (r.promptTokens ?? 0) + (r.completionTokens ?? 0);
         const runCost = costUsdOf(
-          a.modelId,
+          r.modelId,
           r.promptTokens ?? 0,
           r.completionTokens ?? 0,
         );
-        const cost = useCostUsd
-          ? clamp01(1 - runCost / maxCostUsd) * 100
-          : clamp01(1 - runTokens / maxTokens) * 100;
+        // Unknown-model runs contribute no cost signal (null) rather than a
+        // perfect 100, so an unpriced model can't game the composite.
+        const cost =
+          runCost !== null && pricedAnywhere
+            ? clamp01(1 - runCost / maxCostUsd) * 100
+            : runCost === null && !pricedAnywhere
+              ? clamp01(1 - runTokens / maxTokens) * 100
+              : null;
 
         const c = composeScore(
           { accuracy, quality, acceptance, speed, cost },
@@ -542,11 +465,13 @@ export class ExperimentsService {
         avgLatencyMs !== null
           ? clamp01(1 - avgLatencyMs / maxLatency) * 100
           : null;
-      const cost = useCostUsd
-        ? clamp01(1 - a.costUsd / maxCostUsd) * 100
+      const cost = pricedAnywhere
+        ? a.pricedRuns > 0
+          ? clamp01(1 - a.costUsd / maxCostUsd) * 100
+          : null
         : clamp01(1 - totalTokens / maxTokens) * 100;
 
-      const powered = a.samples >= exp.minSampleSize;
+      const minSampleReached = a.samples >= exp.minSampleSize;
       const acceptanceCI =
         acceptanceRate !== null ? wilsonCI(a.accepted, a.decided) : null;
 
@@ -578,7 +503,7 @@ export class ExperimentsService {
         compositeCI,
         compositeN: compositeVals.length,
         compositeSd,
-        powered,
+        minSampleReached,
       };
     });
 
@@ -636,35 +561,25 @@ export class ExperimentsService {
       };
     });
 
-    const poweredArms = arms.filter((s) => s.powered && s.composite !== null);
-    const winner = poweredArms.reduce<(typeof poweredArms)[number] | null>(
-      (best, s) => {
-        if (s.composite === null) return best;
-        if (
-          best === null ||
-          best.composite === null ||
-          s.composite > best.composite
-        ) {
-          return s;
-        }
-        return best;
-      },
-      null,
-    );
+    // A treatment is recommended only when it is significantly better than
+    // control (95% composite verdict). A bare mean advantage — or a winner
+    // picked before significance — is exactly the premature "winner" the
+    // significance machinery exists to prevent.
+    const winner = selectWinner(arms);
 
     return {
       experiment: exp,
       metricsWeights: exp.metricsWeights,
       arms,
-      recommendation: winner
-        ? {
-            variantId: winner.variantId,
-            vendor: winner.vendor,
-            modelId: winner.modelId,
-            composite: winner.composite,
-            samples: winner.samples,
-          }
-        : null,
+      recommendation: winner,
+      caveat:
+        'Speed and cost are normalized against the largest values seen so far ' +
+        'in this experiment, so composite scores and their CIs are relative ' +
+        'rankings whose baselines drift as more audits arrive — not fixed-property ' +
+        'intervals. "Min sample reached" is a configured sample target, not a ' +
+        'statistical power computation. A treatment is recommended only when its ' +
+        'composite is significantly better than control at 95%; no multiple-' +
+        'comparison correction is applied when several treatments are compared.',
     };
   }
 
