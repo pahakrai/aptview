@@ -284,7 +284,86 @@ Treat the winner as a **final business decision** only after:
 
 ---
 
-## 8. Revision history
+## 8. Deliberate flow A/B — benchmark, ranking, promotion ("the plugin")
+
+### 8.1 Agent architecture (flow) and tool chains
+
+An experiment arm (AuditStrategy) now optionally carries three more fields:
+
+- flow: 'sequential' | 'orchestrator' — the agent architecture being tested.
+- toolChain: { skills: string[], mcp: string[] } — which skills and MCP servers an
+  orchestrator arm may call through its LangGraph tool loop.
+- flowGraph: a v1 preset diagram ({ flow, version: 1 }); richer node/edge editing
+  (draw.io-style) lands in a later version.
+
+- sequential = the fixed harness: diff -> guidelines -> one LLM call -> verdict.
+- orchestrator = planner + tool loop (skills + MCP) -> reviewer -> verdict. Every
+  LLM call in the loop is token-accounted.
+
+Legacy arms (no flow field) behave exactly as before.
+
+### 8.2 Deliberate benchmark runs
+
+POST /experiments/:id/benchmark-runs runs every arm of the experiment against one
+snapshot input (a pasted diff, or a linked PR). Each arm executes its own
+architecture and records a run with source='benchmark' plus a full telemetry row
+(total tokens across all LLM calls, cost, latency, tool-call count, verdict,
+scores). Results are side-by-side comparisons of architectures, not randomized
+live traffic.
+
+GET /experiments/:id/benchmark returns per-arm telemetry, the ranking vector,
+and the blended final score.
+
+### 8.3 Manual ranking -> vector -> final score
+
+Admins rank the N arm outputs per PR (1 = best). Each rank normalizes to
+(N - rank) / (N - 1) * 100, then averages across PRs into a per-arm ranking
+vector. The final score blends the automated composite with the ranking vector
+using MetricsWeights.ranking (default 0.20, clamped to [0,1]). The benchmark
+winner is the highest final score — a manual/blended signal, not the
+significance-gated winner used for live traffic.
+
+### 8.4 Promotion ("the plugin")
+
+POST /experiments/:id/promote writes a new active_flows row (append-only history,
+versioned, previousId rollback chain). The active flow is the architecture that
+becomes the default live reviewer:
+
+- repo-scoped rows override org-scoped rows.
+- POST /experiments/active-flows/:id/revert appends a row restoring the previous
+  variant.
+- GET /experiments/active-flows lists promotion history.
+
+Live resolution precedence in the audit worker:
+
+1. a running experiment's bucketed arm (existing live data collection),
+2. the promoted active flow (the plugin; repo overrides org),
+3. the AUDIT_MODE env var (legacy fallback).
+
+Promoted flows keep recording live HITL acceptance, so a choice made in the lab
+stays validated in production — the flywheel.
+
+### 8.5 Async execution, notifications, and the flywheel
+
+Benchmark runs are asynchronous. POST /experiments/:id/benchmark-runs enqueues a
+background job and returns immediately; the job status is polled via
+GET /experiments/benchmark-jobs/:id (queued -> running -> completed / failed /
+cancelled). Only one queued/running job is allowed per experiment — a second
+enqueue returns 409. POST /experiments/benchmark-jobs/:id/cancel aborts the run
+(cooperative: the worker stops between arms and aborts the in-flight LLM call).
+
+On completion or failure a row is written to the notifications table
+(GET /experiments/notifications). The Experiments page shows the live status and a
+Cancel button, so an admin can kick off a run, keep working, and check back later.
+
+Promoted flows record each reviewed PR into active_flow_runs, and human HITL
+decisions (approve / revise / cancel) are folded back into those rows — so a
+promoted architecture keeps accumulating live acceptance after promotion. That
+closes the lab -> plugin -> keep-learning loop.
+
+---
+
+## 9. Revision history
 
 Behavioral changes to the experiment layer and where each is defined above:
 

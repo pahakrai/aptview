@@ -6,6 +6,7 @@ import { AuditsController } from './audits.controller';
 import { AuditProcessor } from './audit.processor';
 import { SandboxService } from './sandbox.service';
 import { ExperimentsModule } from '../experiments/experiments.module';
+import { FlowRunnerModule } from '../flow-runner/flow-runner.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { ExperimentsModule } from '../experiments/experiments.module';
       name: 'audits',
     }),
     ExperimentsModule,
+    FlowRunnerModule,
   ],
   controllers: [AuditsController],
   providers: [AuditsService, AuditProcessor, SandboxService],

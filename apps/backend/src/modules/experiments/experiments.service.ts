@@ -1,8 +1,19 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, isNull, or } from 'drizzle-orm';
 import { db } from '../../database/client';
-import { experimentRuns, experiments, reviewDecisions } from '../../database/schema';
+import {
+  adminRankings,
+  benchmarkJobs,
+  codeGuidelines,
+  experimentRuns,
+  experiments,
+  reviewDecisions,
+} from '../../database/schema';
 import type {
   AuditStrategy,
   AuditVerdict,
@@ -10,6 +21,12 @@ import type {
   MetricsWeights,
   ReviewDecisionAction,
 } from '@aigov/shared-types';
+import type { BenchmarkInputSnapshot } from '@aigov/shared-types';
+import { FlowRunnerService } from '../flow-runner/flow-runner.service';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
+import { NotificationsService } from './notifications.service';
+import { PromotionsService } from './promotions.service';
 import {
   clamp01,
   composeScore,
@@ -23,6 +40,7 @@ import {
   selectWinner,
   wilsonCI,
 } from './experiment-stats';
+import { blendFinalScore, normalizeRankings, pickHighestScore } from './experiment-ranking';
 
 export const DEFAULT_METRICS_WEIGHTS: MetricsWeights = {
   accuracy: 0.35,
@@ -108,7 +126,15 @@ interface ArmAccumulator {
  */
 @Injectable()
 export class ExperimentsService {
-  constructor(private readonly configService: ConfigService) {}
+  private readonly abortControllers = new Map<string, AbortController>();
+
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly flowRunner: FlowRunnerService,
+    @InjectQueue('benchmarks') private readonly benchmarksQueue: Queue,
+    private readonly notifications: NotificationsService,
+    private readonly promotions: PromotionsService,
+  ) {}
 
   /**
    * Global kill-switch. Reads `EXPERIMENTS_ENABLED` (default: off).
@@ -286,6 +312,16 @@ export class ExperimentsService {
           eq(experimentRuns.prNumber, input.prNumber),
         ),
       );
+
+    // Also fold the decision into any promoted-flow (plugin) run for the same PR,
+    // so a promoted architecture keeps accumulating live acceptance.
+    await this.promotions.foldHumanDecision(
+      input.repositoryFullName,
+      input.prNumber,
+      input.action,
+      humanAccepted,
+      input.revisionCount,
+    );
   }
 
   /**
@@ -630,5 +666,434 @@ export class ExperimentsService {
       .where(eq(experiments.id, id))
       .returning();
     return exp ?? null;
+  }
+
+  // ==========================================================================
+  // Deliberate flow A/B — benchmark runs, ranking, promotion ("the plugin")
+  // ==========================================================================
+
+  /**
+   * Enqueue an async deliberate benchmark run. Returns the job immediately;
+   * the worker (BenchmarksProcessor) executes the arms in the background and
+   * writes a notification on completion. Only one queued/running job is
+   * allowed per experiment at a time.
+   */
+  async enqueueBenchmark(
+    experimentId: string,
+    input: {
+      organizationId: string;
+      repositoryFullName?: string | null;
+      prNumber?: number | null;
+      prTitle?: string;
+      diffContent?: string;
+      taskDescription?: string;
+      createdBy?: string;
+    },
+  ) {
+    const exp = await this.getById(experimentId);
+    if (!exp) throw new NotFoundException('Experiment ' + experimentId + ' not found');
+
+    const [active] = await db
+      .select({ id: benchmarkJobs.id })
+      .from(benchmarkJobs)
+      .where(
+        and(
+          eq(benchmarkJobs.experimentId, experimentId),
+          or(eq(benchmarkJobs.status, 'queued'), eq(benchmarkJobs.status, 'running')),
+        ),
+      )
+      .limit(1);
+    if (active) {
+      throw new ConflictException('A benchmark is already queued or running for this experiment');
+    }
+
+    const guidelines = await db
+      .select()
+      .from(codeGuidelines)
+      .where(
+        and(
+          eq(codeGuidelines.organizationId, input.organizationId),
+          eq(codeGuidelines.isEnabled, true),
+        ),
+      );
+
+    const snapshot: BenchmarkInputSnapshot = {
+      repositoryFullName: input.repositoryFullName ?? null,
+      prNumber: input.prNumber ?? null,
+      prTitle: input.prTitle ?? '',
+      diffContent: input.diffContent ?? '',
+      taskDescription: input.taskDescription ?? '',
+      guidelines: guidelines.map((g) => ({
+        name: g.name,
+        severity: g.severity,
+        pattern: g.pattern,
+      })),
+    };
+
+    const [job] = await db
+      .insert(benchmarkJobs)
+      .values({
+        experimentId,
+        organizationId: input.organizationId,
+        status: 'queued',
+        inputSnapshot: snapshot,
+        createdBy: input.createdBy ?? 'admin',
+      })
+      .returning();
+
+    this.abortControllers.set(job.id, new AbortController());
+    await this.benchmarksQueue.add(
+      'run-benchmark',
+      { benchmarkJobId: job.id, experimentId, organizationId: input.organizationId },
+      { jobId: job.id },
+    );
+
+    return job;
+  }
+
+  /**
+   * Execute a queued benchmark job (called by BenchmarksProcessor). Runs every
+   * arm sequentially, records telemetry, and writes a completion notification.
+   * Cooperative cancellation: checks the job's AbortSignal before each arm.
+   */
+  async runBenchmarkJob(benchmarkJobId: string): Promise<void> {
+    const [job] = await db
+      .select()
+      .from(benchmarkJobs)
+      .where(eq(benchmarkJobs.id, benchmarkJobId))
+      .limit(1);
+    if (!job || job.status === 'cancelled') return;
+
+    await db
+      .update(benchmarkJobs)
+      .set({ status: 'running', startedAt: new Date() })
+      .where(eq(benchmarkJobs.id, benchmarkJobId));
+
+    const signal = this.abortControllers.get(benchmarkJobId)?.signal;
+
+    try {
+      const exp = await this.getById(job.experimentId);
+      if (!exp) throw new Error('Experiment ' + job.experimentId + ' not found');
+
+      const snapshot = job.inputSnapshot;
+      const guidelines = await db
+        .select()
+        .from(codeGuidelines)
+        .where(
+          and(
+            eq(codeGuidelines.organizationId, job.organizationId),
+            eq(codeGuidelines.isEnabled, true),
+          ),
+        );
+
+      const flowGuidelines = guidelines.map((g) => ({
+        name: g.name,
+        description: g.description,
+        pattern: g.pattern,
+        severity: g.severity,
+      }));
+
+      const variants: Array<{ variantId: string; strategy: AuditStrategy }> = [
+        { variantId: 'control', strategy: exp.controlStrategy },
+        ...exp.treatmentStrategies.map((s, i) => ({
+          variantId: 'treatment-' + (i + 1),
+          strategy: s,
+        })),
+      ];
+
+      for (const v of variants) {
+        if (signal?.aborted) break;
+        const outcome = await this.flowRunner.run(
+          v.strategy,
+          {
+            prTitle: snapshot?.prTitle ?? 'PR ' + (snapshot?.prNumber ?? 'benchmark'),
+            diffContent: snapshot?.diffContent ?? '',
+            taskDescription: snapshot?.taskDescription,
+            guidelines: flowGuidelines,
+          },
+          signal,
+        );
+
+        await db.insert(experimentRuns).values({
+          experimentId: job.experimentId,
+          variantId: v.variantId,
+          auditId: null,
+          prNumber: snapshot?.prNumber ?? 0,
+          vendor: v.strategy.vendor,
+          modelId: v.strategy.modelId,
+          repositoryFullName: snapshot?.repositoryFullName ?? null,
+          strategySnapshot: v.strategy,
+          source: 'benchmark',
+          inputSnapshot: snapshot,
+          toolCalls: outcome.toolCalls,
+          verdict: outcome.verdict,
+          complianceScore: outcome.complianceScore,
+          efficiencyScore: outcome.efficiencyScore,
+          coverageScore: outcome.coverageScore,
+          latencyMs: outcome.latencyMs,
+          promptTokens: outcome.promptTokens,
+          completionTokens: outcome.completionTokens,
+          agreedWithInline: null,
+          parseOk: outcome.parseOk,
+        });
+      }
+
+      if (signal?.aborted) {
+        await db
+          .update(benchmarkJobs)
+          .set({ status: 'cancelled', completedAt: new Date() })
+          .where(eq(benchmarkJobs.id, benchmarkJobId));
+        return;
+      }
+
+      await db
+        .update(benchmarkJobs)
+        .set({ status: 'completed', completedAt: new Date() })
+        .where(eq(benchmarkJobs.id, benchmarkJobId));
+
+      await this.notifications.notify(job.organizationId, 'benchmark_completed', 'Benchmark completed', 'Experiment benchmark finished.');
+    } catch (err) {
+      const aborted = signal?.aborted;
+      if (aborted) {
+        await db
+          .update(benchmarkJobs)
+          .set({ status: 'cancelled', completedAt: new Date() })
+          .where(eq(benchmarkJobs.id, benchmarkJobId));
+      } else {
+        await db
+          .update(benchmarkJobs)
+          .set({ status: 'failed', error: (err as Error).message, completedAt: new Date() })
+          .where(eq(benchmarkJobs.id, benchmarkJobId));
+        await this.notifications.notify(job.organizationId, 'benchmark_failed', 'Benchmark failed', (err as Error).message);
+      }
+    } finally {
+      this.abortControllers.delete(benchmarkJobId);
+    }
+  }
+
+  async getBenchmarkJob(id: string) {
+    const [job] = await db
+      .select()
+      .from(benchmarkJobs)
+      .where(eq(benchmarkJobs.id, id))
+      .limit(1);
+    return job ?? null;
+  }
+
+  async listBenchmarkJobs(experimentId: string) {
+    return db
+      .select()
+      .from(benchmarkJobs)
+      .where(eq(benchmarkJobs.experimentId, experimentId))
+      .orderBy(desc(benchmarkJobs.createdAt));
+  }
+
+  async cancelBenchmark(id: string) {
+    const [job] = await db
+      .select()
+      .from(benchmarkJobs)
+      .where(eq(benchmarkJobs.id, id))
+      .limit(1);
+    if (!job) throw new NotFoundException('Benchmark job ' + id + ' not found');
+    if (job.status === 'queued' || job.status === 'running') {
+      this.abortControllers.get(id)?.abort();
+      await db
+        .update(benchmarkJobs)
+        .set({ status: 'cancelled', completedAt: new Date() })
+        .where(eq(benchmarkJobs.id, id));
+    }
+    const [updated] = await db
+      .select()
+      .from(benchmarkJobs)
+      .where(eq(benchmarkJobs.id, id))
+      .limit(1);
+    return updated;
+  }
+
+  /**
+   * Benchmark report: per-variant telemetry + the admin ranking vector + the
+   * blended final score. The winner is the highest final score (a manual/blended
+   * signal — not the significance-gated winner used for live traffic).
+   */
+  async getBenchmarkReport(experimentId: string) {
+    const exp = await this.getById(experimentId);
+    if (!exp) throw new NotFoundException('Experiment ' + experimentId + ' not found');
+
+    const runs = await db
+      .select()
+      .from(experimentRuns)
+      .where(
+        and(
+          eq(experimentRuns.experimentId, experimentId),
+          eq(experimentRuns.source, 'benchmark'),
+        ),
+      );
+
+    const rankings = await db
+      .select()
+      .from(adminRankings)
+      .where(eq(adminRankings.experimentId, experimentId));
+
+    // Normalize ranks per PR, then average into a per-variant ranking vector.
+    const votesByPr = new Map<string, Array<{ variantId: string; rank: number }>>();
+    for (const r of rankings) {
+      const key = r.repositoryFullName + '#' + r.prNumber;
+      const list = votesByPr.get(key) ?? [];
+      list.push({ variantId: r.variantId, rank: r.rank });
+      votesByPr.set(key, list);
+    }
+    const rankByVariant = new Map<string, number[]>();
+    for (const votes of votesByPr.values()) {
+      for (const nv of normalizeRankings(votes)) {
+        const arr = rankByVariant.get(nv.variantId) ?? [];
+        arr.push(nv.rankScore);
+        rankByVariant.set(nv.variantId, arr);
+      }
+    }
+
+    const groups = new Map<string, ExperimentRunRow[]>();
+    for (const r of runs) {
+      const list = groups.get(r.variantId) ?? [];
+      list.push(r);
+      groups.set(r.variantId, list);
+    }
+
+    const variantIds = [
+      'control',
+      ...exp.treatmentStrategies.map((_, i) => 'treatment-' + (i + 1)),
+    ];
+
+    const arms = variantIds.map((variantId) => {
+      const index = variantId === 'control' ? -1 : Number(variantId.split('-')[1]) - 1;
+      const strategy = index === -1 ? exp.controlStrategy : exp.treatmentStrategies[index];
+      const rs = groups.get(variantId) ?? [];
+      const n = rs.length;
+
+      const avg = (vals: number[]) =>
+        vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+
+      const avgCompliance = avg(rs.map((r) => r.complianceScore).filter((v): v is number => v !== null));
+      const avgEfficiency = avg(rs.map((r) => r.efficiencyScore).filter((v): v is number => v !== null));
+      const avgCoverage = avg(rs.map((r) => r.coverageScore).filter((v): v is number => v !== null));
+      const avgLatencyMs = avg(rs.map((r) => r.latencyMs).filter((v): v is number => v !== null));
+      const totalPromptTokens = rs.reduce((s, r) => s + (r.promptTokens ?? 0), 0);
+      const totalCompletionTokens = rs.reduce((s, r) => s + (r.completionTokens ?? 0), 0);
+      const totalToolCalls = rs.reduce((s, r) => s + (r.toolCalls ?? 0), 0);
+      const parseOk = rs.filter((r) => r.parseOk).length;
+
+      let priced = 0;
+      let totalCost = 0;
+      for (const r of rs) {
+        const c = costUsdOf(r.modelId, r.promptTokens ?? 0, r.completionTokens ?? 0);
+        if (c !== null) {
+          priced += 1;
+          totalCost += c;
+        }
+      }
+      const avgCostUsd = priced > 0 ? totalCost / priced : 0;
+
+      // Automated composite = average of the available score axes (transparent).
+      const scoreParts = [avgCompliance, avgEfficiency, avgCoverage].filter(
+        (v): v is number => v !== null,
+      );
+      const composite = scoreParts.length
+        ? scoreParts.reduce((a, b) => a + b, 0) / scoreParts.length
+        : null;
+
+      const rankVals = rankByVariant.get(variantId) ?? [];
+      const rankingScore = rankVals.length
+        ? rankVals.reduce((a, b) => a + b, 0) / rankVals.length
+        : null;
+
+      const finalScore = blendFinalScore(
+        composite,
+        rankingScore,
+        exp.metricsWeights.ranking ?? 0.2,
+      );
+
+      return {
+        variantId,
+        vendor: strategy?.vendor ?? null,
+        modelId: strategy?.modelId ?? null,
+        flow: strategy?.flow ?? 'sequential',
+        samples: n,
+        verdictCounts: {
+          pass: rs.filter((r) => r.verdict === 'pass').length,
+          fail: rs.filter((r) => r.verdict === 'fail').length,
+          warning: rs.filter((r) => r.verdict === 'warning').length,
+        },
+        avgCompliance,
+        avgEfficiency,
+        avgCoverage,
+        avgLatencyMs,
+        totalPromptTokens,
+        totalCompletionTokens,
+        totalToolCalls,
+        avgCostUsd,
+        parseOkRate: n > 0 ? parseOk / n : null,
+        composite,
+        rankingScore,
+        finalScore,
+      };
+    });
+
+    const winner = pickHighestScore(
+      arms.map((a) => ({
+        variantId: a.variantId,
+        vendor: a.vendor ?? '',
+        modelId: a.modelId ?? '',
+        finalScore: a.finalScore,
+      })),
+    );
+
+    return {
+      experiment: exp,
+      metricsWeights: exp.metricsWeights,
+      arms,
+      winner,
+      caveat:
+        'Benchmark runs are deliberate (self-selected inputs), so their scores ' +
+        'are side-by-side comparisons, not randomized live traffic. The winner is ' +
+        'the highest blended final score (automated composite blended with the ' +
+        'admin ranking vector); it is not significance-gated.',
+    };
+  }
+
+  /** Upsert admin rankings for one PR (re-rankable). */
+  async upsertRankings(
+    experimentId: string,
+    input: {
+      repositoryFullName: string;
+      prNumber: number;
+      rankedBy?: string;
+      rankings: Array<{ variantId: string; rank: number }>;
+    },
+  ) {
+    const exp = await this.getById(experimentId);
+    if (!exp) throw new NotFoundException('Experiment ' + experimentId + ' not found');
+    const rankedBy = input.rankedBy ?? 'admin';
+
+    for (const r of input.rankings) {
+      await db
+        .insert(adminRankings)
+        .values({
+          experimentId,
+          repositoryFullName: input.repositoryFullName,
+          prNumber: input.prNumber,
+          variantId: r.variantId,
+          rank: r.rank,
+          rankedBy,
+        })
+        .onConflictDoUpdate({
+          target: [
+            adminRankings.experimentId,
+            adminRankings.repositoryFullName,
+            adminRankings.prNumber,
+            adminRankings.variantId,
+          ],
+          set: { rank: r.rank, rankedBy, updatedAt: new Date() },
+        });
+    }
+    return { experimentId, updated: input.rankings.length };
   }
 }

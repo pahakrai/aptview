@@ -15,6 +15,8 @@ import { SandboxService } from './sandbox.service';
 import { formatChangedFilesForPrompt } from './diff-parser';
 import { callDeepSeekChat } from './llm-deepseek';
 import { ExperimentsService, ResolvedArm } from '../experiments/experiments.service';
+import { PromotionsService } from '../experiments/promotions.service';
+import { FlowRunnerService } from '../flow-runner/flow-runner.service';
 
 /**
  * AuditProcessor — BullMQ worker for code review jobs.
@@ -61,6 +63,8 @@ export class AuditProcessor extends WorkerHost {
     private readonly sandboxService: SandboxService,
     private readonly configService: ConfigService,
     private readonly experimentsService: ExperimentsService,
+    private readonly flowRunner: FlowRunnerService,
+    private readonly promotionsService: PromotionsService,
   ) {
     super();
     const mode = this.configService.get<string>('AUDIT_MODE');
@@ -100,9 +104,130 @@ export class AuditProcessor extends WorkerHost {
       return { auditId: outcome.auditId };
     }
 
+    // Plugin: a promoted active flow (repo overrides org). Runs the chosen
+    // architecture (sequential or orchestrator) for live reviews.
+    const activeFlow = await this.promotionsService.resolveActiveFlow(
+      job.data.organizationId,
+      job.data.repositoryId,
+    );
+    if (activeFlow) {
+      return this.processViaFlow(job, activeFlow.variant, activeFlow.id);
+    }
+
     if (this.auditMode === 'sandbox') return this.processViaSandbox(job);
     if (this.auditMode === 'sdk') return this.processViaSDK(job);
     return this.processInline(job);
+  }
+
+  /**
+   * Run a live review through the promoted flow architecture (the "plugin").
+   * Persists the audit + scope violations just like the other engines.
+   */
+  private async processViaFlow(
+    job: Job<AuditRequest>,
+    strategy: AuditStrategy,
+    activeFlowId: string,
+  ): Promise<AuditOutcome> {
+    const start = Date.now();
+    const {
+      organizationId,
+      repositoryId,
+      prNumber,
+      prTitle,
+      commitSha,
+      diffContent,
+      taskDescription,
+    } = job.data;
+
+    const guidelines = await db
+      .select()
+      .from(codeGuidelines)
+      .where(eq(codeGuidelines.organizationId, organizationId));
+    const activeGuidelines = guidelines.filter((g) => g.isEnabled);
+
+    const outcome = await this.flowRunner.run(strategy, {
+      prTitle: prTitle ?? 'PR ' + prNumber,
+      diffContent,
+      taskDescription,
+      guidelines: activeGuidelines.map((g) => ({
+        name: g.name,
+        description: g.description,
+        pattern: g.pattern,
+        severity: g.severity,
+      })),
+    });
+
+    const durationMs = Date.now() - start;
+
+    const [audit] = await db
+      .insert(aiAudits)
+      .values({
+        organizationId,
+        repositoryId,
+        prNumber,
+        prTitle,
+        commitSha,
+        verdict: outcome.verdict,
+        totalViolations: outcome.totalViolations,
+        errorCount: outcome.errorCount,
+        warningCount: outcome.warningCount,
+        scopeCreepDetected: outcome.scopeCreepDetected,
+        complianceScore: outcome.complianceScore,
+        efficiencyScore: outcome.efficiencyScore,
+        coverageScore: outcome.coverageScore,
+        actualLoc: outcome.actualLoc,
+        estimatedLoc: outcome.estimatedLoc,
+        auditDurationMs: durationMs,
+        completedAt: new Date(),
+      })
+      .returning();
+
+    if (outcome.scopeCreepDetected) {
+      await db.insert(scopeViolations).values({
+        auditId: audit.id,
+        filePath: 'N/A (flow runner)',
+        violationType: 'loc_explosion',
+        description:
+          'Flow runner detected scope creep. Actual LOC (' +
+          outcome.actualLoc +
+          ') vs estimated (' +
+          outcome.estimatedLoc +
+          ').',
+        actualLoc: outcome.actualLoc,
+        expectedLoc: outcome.estimatedLoc,
+      });
+    }
+
+    // Flywheel: record this promoted-flow review so its live HITL acceptance
+    // keeps accumulating after promotion.
+    if (job.data.repositoryFullName) {
+      await this.promotionsService.recordActiveFlowRun({
+        activeFlowId,
+        repositoryFullName: job.data.repositoryFullName,
+        prNumber,
+        flow: strategy.flow ?? 'sequential',
+        verdict: outcome.verdict,
+        complianceScore: outcome.complianceScore,
+        efficiencyScore: outcome.efficiencyScore,
+        coverageScore: outcome.coverageScore,
+        latencyMs: durationMs,
+        promptTokens: outcome.promptTokens,
+        completionTokens: outcome.completionTokens,
+        toolCalls: outcome.toolCalls,
+      });
+    }
+
+    return {
+      auditId: audit.id,
+      verdict: outcome.verdict,
+      complianceScore: outcome.complianceScore,
+      efficiencyScore: outcome.efficiencyScore,
+      coverageScore: outcome.coverageScore,
+      latencyMs: durationMs,
+      promptTokens: outcome.promptTokens,
+      completionTokens: outcome.completionTokens,
+      parseOk: outcome.parseOk,
+    };
   }
 
   /**

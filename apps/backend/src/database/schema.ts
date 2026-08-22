@@ -8,9 +8,14 @@ import {
   boolean,
   jsonb,
   index,
+  uniqueIndex,
   pgEnum,
 } from 'drizzle-orm/pg-core';
-import type { AuditStrategy, MetricsWeights } from '@aigov/shared-types';
+import type {
+  AuditStrategy,
+  BenchmarkInputSnapshot,
+  MetricsWeights,
+} from '@aigov/shared-types';
 
 // ============================================================================
 // Enums
@@ -69,6 +74,19 @@ export const reviewDecisionActionEnum = pgEnum('review_decision_action', [
   'approve',
   'revise',
   'cancel',
+]);
+
+export const runSourceEnum = pgEnum('run_source', [
+  'live',
+  'benchmark',
+]);
+
+export const benchmarkJobStatusEnum = pgEnum('benchmark_job_status', [
+  'queued',
+  'running',
+  'completed',
+  'failed',
+  'cancelled',
 ]);
 
 // ============================================================================
@@ -369,6 +387,9 @@ export const experimentRuns = pgTable('experiment_runs', {
   modelId: varchar('model_id', { length: 100 }).notNull(),
   repositoryFullName: varchar('repository_full_name', { length: 512 }),
   strategySnapshot: jsonb('strategy_snapshot').$type<AuditStrategy>().notNull(),
+  source: runSourceEnum('source').notNull().default('live'),
+  inputSnapshot: jsonb('input_snapshot').$type<BenchmarkInputSnapshot>(),
+  toolCalls: integer('tool_calls'),
   verdict: auditVerdictEnum('verdict'),
   complianceScore: integer('compliance_score'),
   efficiencyScore: integer('efficiency_score'),
@@ -383,10 +404,15 @@ export const experimentRuns = pgTable('experiment_runs', {
   revisionCount: integer('revision_count'),
   acceptedAt: timestamp('accepted_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-}, (table) => [
-  index('experiment_runs_experiment_idx').on(table.experimentId),
-  index('experiment_runs_repo_pr_idx').on(table.repositoryFullName, table.prNumber),
-]);
+}, (table) => ({
+  experimentRunsExperimentIdx: index('experiment_runs_experiment_idx').on(
+    table.experimentId,
+  ),
+  experimentRunsRepoPrIdx: index('experiment_runs_repo_pr_idx').on(
+    table.repositoryFullName,
+    table.prNumber,
+  ),
+}));
 
 /**
  * review_decisions — durable record of each human code-reviewer decision
@@ -403,6 +429,159 @@ export const reviewDecisions = pgTable('review_decisions', {
   revisionCount: integer('revision_count').default(0).notNull(),
   note: text('note'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-}, (table) => [
-  index('review_decisions_repo_pr_idx').on(table.repositoryFullName, table.prNumber),
-]);
+}, (table) => ({
+  reviewDecisionsRepoPrIdx: index('review_decisions_repo_pr_idx').on(
+    table.repositoryFullName,
+    table.prNumber,
+  ),
+}));
+
+// ============================================================================
+// Deliberate Flow A/B — architecture ranking + promotion ("the plugin")
+// ============================================================================
+
+/**
+ * admin_rankings — a manual 1..N ordering of an arm's output for one PR.
+ * Normalized into the final score's ranking vector. Re-rankable (upsert).
+ */
+export const adminRankings = pgTable('admin_rankings', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  experimentId: uuid('experiment_id')
+    .notNull()
+    .references(() => experiments.id, { onDelete: 'cascade' }),
+  repositoryFullName: varchar('repository_full_name', { length: 512 }).notNull(),
+  prNumber: integer('pr_number').notNull(),
+  variantId: varchar('variant_id', { length: 50 }).notNull(),
+  rank: integer('rank').notNull(),
+  note: text('note'),
+  rankedBy: varchar('ranked_by', { length: 255 }).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  adminRankingsUniqueVote: uniqueIndex('admin_rankings_unique_vote').on(
+    table.experimentId,
+    table.repositoryFullName,
+    table.prNumber,
+    table.variantId,
+  ),
+  adminRankingsExperimentIdx: index('admin_rankings_experiment_idx').on(
+    table.experimentId,
+  ),
+  adminRankingsRepoPrIdx: index('admin_rankings_repo_pr_idx').on(
+    table.repositoryFullName,
+    table.prNumber,
+  ),
+}));
+
+/**
+ * active_flows — a promoted flow variant ("the plugin"): the architecture that
+ * becomes the default live reviewer for an org/repo. Append-only history: each
+ * promotion inserts a new row; the "active" flow for a scope is the latest
+ * (highest version / promotedAt). Repo-scoped rows override org-scoped;
+ * previousId forms the rollback chain.
+ *
+ * Scope convention:
+ *   - org-scoped row:  organizationId set, repositoryId NULL.
+ *   - repo-scoped row: repositoryId set, organizationId NULL (derivable from
+ *     repositories.organizationId).
+ */
+export const activeFlows = pgTable('active_flows', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  organizationId: uuid('organization_id').references(() => organizations.id, {
+    onDelete: 'cascade',
+  }),
+  repositoryId: uuid('repository_id').references(() => repositories.id, {
+    onDelete: 'cascade',
+  }),
+  variant: jsonb('variant').$type<AuditStrategy>().notNull(),
+  version: integer('version').default(1).notNull(),
+  promotedBy: varchar('promoted_by', { length: 255 }).notNull(),
+  promotedAt: timestamp('promoted_at').defaultNow().notNull(),
+  previousId: uuid('previous_id'),
+}, (table) => ({
+  activeFlowsOrgIdx: index('active_flows_org_idx').on(table.organizationId),
+  activeFlowsRepoIdx: index('active_flows_repo_idx').on(table.repositoryId),
+}));
+
+/**
+ * active_flow_runs — one observation per PR reviewed by a promoted flow
+ * (the plugin). Correlates to review_decisions via (repository_full_name,
+ * pr_number) so a promoted architecture keeps accumulating live HITL
+ * acceptance — the post-promotion flywheel.
+ */
+export const activeFlowRuns = pgTable('active_flow_runs', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  activeFlowId: uuid('active_flow_id')
+    .notNull()
+    .references(() => activeFlows.id, { onDelete: 'cascade' }),
+  repositoryFullName: varchar('repository_full_name', { length: 512 }).notNull(),
+  prNumber: integer('pr_number').notNull(),
+  verdict: auditVerdictEnum('verdict'),
+  complianceScore: integer('compliance_score'),
+  efficiencyScore: integer('efficiency_score'),
+  coverageScore: integer('coverage_score'),
+  latencyMs: integer('latency_ms'),
+  promptTokens: integer('prompt_tokens'),
+  completionTokens: integer('completion_tokens'),
+  toolCalls: integer('tool_calls'),
+  flow: varchar('flow', { length: 50 }),
+  humanDecision: reviewDecisionActionEnum('human_decision'),
+  humanAccepted: boolean('human_accepted'),
+  revisionCount: integer('revision_count'),
+  acceptedAt: timestamp('accepted_at'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  activeFlowRunsUnique: uniqueIndex('active_flow_runs_unique').on(
+    table.activeFlowId,
+    table.repositoryFullName,
+    table.prNumber,
+  ),
+  activeFlowRunsRepoPrIdx: index('active_flow_runs_repo_pr_idx').on(
+    table.repositoryFullName,
+    table.prNumber,
+  ),
+}));
+
+/**
+ * benchmark_jobs — an async deliberate benchmark run. One job runs every arm
+ * of an experiment against a snapshot input; status is polled by the UI and
+ * surfaced via notifications.
+ */
+export const benchmarkJobs = pgTable('benchmark_jobs', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  experimentId: uuid('experiment_id')
+    .notNull()
+    .references(() => experiments.id, { onDelete: 'cascade' }),
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'cascade' }),
+  status: benchmarkJobStatusEnum('status').notNull().default('queued'),
+  inputSnapshot: jsonb('input_snapshot').$type<BenchmarkInputSnapshot>(),
+  error: text('error'),
+  createdBy: varchar('created_by', { length: 255 }),
+  startedAt: timestamp('started_at'),
+  completedAt: timestamp('completed_at'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  benchmarkJobsExperimentIdx: index('benchmark_jobs_experiment_idx').on(
+    table.experimentId,
+  ),
+}));
+
+/**
+ * notifications — durable in-app notices (e.g. a benchmark job finishing or
+ * failing). The UI polls these or renders them from a notification bell.
+ */
+export const notifications = pgTable('notifications', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  organizationId: uuid('organization_id').references(() => organizations.id, {
+    onDelete: 'cascade',
+  }),
+  type: varchar('type', { length: 100 }).notNull(),
+  title: varchar('title', { length: 255 }).notNull(),
+  body: text('body'),
+  read: boolean('read').default(false).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  notificationsOrgIdx: index('notifications_org_idx').on(table.organizationId),
+}));

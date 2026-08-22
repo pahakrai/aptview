@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   FlaskConical,
   Trophy,
@@ -129,6 +129,9 @@ export default function Experiments() {
   const [newRollout, setNewRollout] = useState(100);
   const [newMinSample, setNewMinSample] = useState(50);
   const [creating, setCreating] = useState(false);
+  const [newFlow, setNewFlow] = useState<'sequential' | 'orchestrator'>('orchestrator');
+  const [newSkills, setNewSkills] = useState('');
+  const [newMcp, setNewMcp] = useState('');
 
   const refresh = () => {
     api
@@ -140,13 +143,25 @@ export default function Experiments() {
   const createExperiment = async () => {
     if (!newName.trim()) return;
     setCreating(true);
+    const treatment: AuditStrategy = {
+      ...DEFAULT_TREATMENT,
+      flow: newFlow,
+      ...(newFlow === 'orchestrator'
+        ? {
+            toolChain: {
+              skills: newSkills.split(',').map((s) => s.trim()).filter(Boolean),
+              mcp: newMcp.split(',').map((s) => s.trim()).filter(Boolean),
+            },
+          }
+        : {}),
+    };
     try {
       await api.post('/experiments', {
         name: newName.trim(),
         rolloutPercent: newRollout,
         minSampleSize: newMinSample,
         controlStrategy: DEFAULT_CONTROL,
-        treatmentStrategies: [DEFAULT_TREATMENT],
+        treatmentStrategies: [treatment],
         metricsWeights: {
           accuracy: 0.35,
           quality: 0.35,
@@ -258,9 +273,41 @@ export default function Experiments() {
             <Plus className="w-4 h-4" /> Create draft
           </button>
         </div>
+        <div className="flex flex-wrap items-end gap-3 mt-3">
+          <div>
+            <label className="text-xs text-slate-500">Treatment flow</label>
+            <select
+              value={newFlow}
+              onChange={(e) => setNewFlow(e.target.value as 'sequential' | 'orchestrator')}
+              className={'mt-1 w-40 ' + 'rounded-lg bg-surface-950 border border-slate-800 px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-emerald-500'}
+            >
+              <option value="sequential">sequential</option>
+              <option value="orchestrator">orchestrator</option>
+            </select>
+          </div>
+          <div className="flex-1 min-w-[180px]">
+            <label className="text-xs text-slate-500">Skills (empty = all built-in)</label>
+            <input
+              value={newSkills}
+              onChange={(e) => setNewSkills(e.target.value)}
+              placeholder="search_guidelines, assess_diff_size"
+              className={'mt-1 w-full ' + 'rounded-lg bg-surface-950 border border-slate-800 px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500'}
+            />
+          </div>
+          <div className="flex-1 min-w-[180px]">
+            <label className="text-xs text-slate-500">MCP servers (optional add-on)</label>
+            <input
+              value={newMcp}
+              onChange={(e) => setNewMcp(e.target.value)}
+              placeholder="k8s, aws"
+              className={'mt-1 w-full ' + 'rounded-lg bg-surface-950 border border-slate-800 px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500'}
+            />
+          </div>
+        </div>
         <p className="text-xs text-slate-600 mt-2">
           Creates a global draft: control <code>deepseek-v4-pro</code> vs treatment{' '}
-          <code>deepseek-v4-flash</code>. Customize arms via API.
+          <code>deepseek-v4-flash</code>. Orchestrator arms get the skills above plus any
+          MCP servers you add (MCP is optional — skills are the baseline).
         </p>
       </div>
 
@@ -452,6 +499,8 @@ function ReportDetail({
           </p>
         </div>
       )}
+
+      <BenchmarkPanel experimentId={exp.id} organizationId={exp.organizationId} arms={arms} />
     </>
   );
 }
@@ -612,6 +661,263 @@ function MiniStat({ label, value }: { label: string; value: string }) {
     <div>
       <p className="text-xs text-slate-500">{label}</p>
       <p className="text-sm font-medium text-slate-300">{value}</p>
+    </div>
+  );
+}
+
+interface BenchmarkArm {
+  variantId: string;
+  vendor: string | null;
+  modelId: string | null;
+  flow: string;
+  samples: number;
+  avgLatencyMs: number | null;
+  totalPromptTokens: number;
+  totalCompletionTokens: number;
+  totalToolCalls: number;
+  avgCostUsd: number;
+  parseOkRate: number | null;
+  avgCompliance: number | null;
+  avgEfficiency: number | null;
+  avgCoverage: number | null;
+  composite: number | null;
+  rankingScore: number | null;
+  finalScore: number | null;
+}
+
+interface BenchmarkReport {
+  experiment: Experiment;
+  arms: BenchmarkArm[];
+  winner: { variantId: string; vendor: string; modelId: string; finalScore: number } | null;
+  caveat: string;
+}
+
+const inputCls =
+  'mt-1 w-full rounded-lg bg-surface-950 border border-slate-800 px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500';
+
+function BenchmarkPanel({
+  experimentId,
+  organizationId,
+  arms,
+}: {
+  experimentId: string;
+  organizationId: string | null;
+  arms: { variantId: string; vendor: string; modelId: string }[];
+}) {
+  const [bench, setBench] = useState<BenchmarkReport | null>(null);
+  const [orgId, setOrgId] = useState(organizationId ?? '');
+  const [prTitle, setPrTitle] = useState('');
+  const [task, setTask] = useState('');
+  const [diff, setDiff] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [ranks, setRanks] = useState<Record<string, number>>({});
+  const [repo, setRepo] = useState('');
+  const [pr, setPr] = useState('');
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [jobStatus, setJobStatus] = useState<string | null>(null);
+  const timerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    };
+  }, []);
+
+  const loadBench = () => {
+    api
+      .get<BenchmarkReport>('/experiments/' + experimentId + '/benchmark')
+      .then((res) => setBench(res.data))
+      .catch(() => {});
+  };
+
+  const pollJob = (id: string) => {
+    api
+      .get<{ id: string; status: string }>('/experiments/benchmark-jobs/' + id)
+      .then((res) => {
+        const s = res.data.status;
+        setJobStatus(s);
+        if (s === 'completed' || s === 'failed' || s === 'cancelled') {
+          setLoading(false);
+          setJobId(null);
+          if (s === 'completed') loadBench();
+          return;
+        }
+        timerRef.current = window.setTimeout(() => pollJob(id), 2000);
+      })
+      .catch(() => {
+        setLoading(false);
+        setJobStatus(null);
+      });
+  };
+
+  const runBench = async () => {
+    setLoading(true);
+    setJobStatus('queued');
+    try {
+      const res = await api.post<{ id: string }>('/experiments/' + experimentId + '/benchmark-runs', {
+        organizationId: orgId,
+        prTitle,
+        taskDescription: task || undefined,
+        diffContent: diff,
+      });
+      setJobId(res.data.id);
+      pollJob(res.data.id);
+    } catch {
+      setLoading(false);
+      setJobStatus(null);
+      alert('Failed to start benchmark (maybe one is already running).');
+    }
+  };
+
+  const cancelJob = async () => {
+    if (!jobId) return;
+    await api.post('/experiments/benchmark-jobs/' + jobId + '/cancel');
+    setJobStatus('cancelled');
+    setLoading(false);
+    setJobId(null);
+  };
+
+  const saveRanks = async () => {
+    if (!repo.trim() || !pr.trim()) {
+      alert('Enter owner/repo and PR number to save rankings.');
+      return;
+    }
+    await api.post('/experiments/' + experimentId + '/rankings', {
+      repositoryFullName: repo.trim(),
+      prNumber: Number(pr) || 0,
+      rankings: arms.map((a) => ({ variantId: a.variantId, rank: ranks[a.variantId] ?? 1 })),
+    });
+    loadBench();
+  };
+
+  const promote = async (variantId: string) => {
+    await api.post('/experiments/' + experimentId + '/promote', {
+      variantId,
+      scope: 'org',
+      organizationId: orgId || organizationId,
+    });
+    alert('Promoted ' + variantId + ' as the active org flow.');
+  };
+
+  return (
+    <div className="card p-5">
+      <div className="flex items-center gap-2 mb-4">
+        <FlaskConical className="w-4 h-4 text-emerald-400" />
+        <h2 className="font-semibold text-white">Deliberate flow benchmark</h2>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+        <input value={orgId} onChange={(e) => setOrgId(e.target.value)} placeholder="Organization ID" className={inputCls} />
+        <input value={prTitle} onChange={(e) => setPrTitle(e.target.value)} placeholder="PR title" className={inputCls} />
+        <input value={task} onChange={(e) => setTask(e.target.value)} placeholder="Task description (optional)" className={inputCls} />
+      </div>
+      <textarea
+        value={diff}
+        onChange={(e) => setDiff(e.target.value)}
+        placeholder="Paste a unified diff to review"
+        rows={6}
+        className={inputCls}
+      />
+      <div className="mt-3 flex items-center gap-3">
+        <button
+          onClick={runBench}
+          disabled={loading || !diff.trim()}
+          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <Play className="w-4 h-4" />
+          {loading ? 'Running…' : 'Run benchmark (all arms)'}
+        </button>
+        {jobStatus && <span className="badge-neutral">status: {jobStatus}</span>}
+        {loading && jobId && (
+          <button
+            onClick={cancelJob}
+            className="px-3 py-1.5 rounded-lg bg-rose-700 hover:bg-rose-600 text-white text-xs font-medium"
+          >
+            Cancel
+          </button>
+        )}
+      </div>
+
+      {bench && (
+        <div className="mt-5">
+          {bench.winner && (
+            <div className="card p-3 border-emerald-500/30 bg-emerald-500/5 mb-4">
+              <p className="text-sm text-white font-semibold">
+                Winner: {bench.winner.variantId} · {bench.winner.vendor}/{bench.winner.modelId} · final score {bench.winner.finalScore.toFixed(1)}
+              </p>
+            </div>
+          )}
+
+          <table className="w-full text-sm text-slate-300">
+            <thead>
+              <tr className="text-left text-xs text-slate-500">
+                <th className="py-1">Arm</th>
+                <th>Flow</th>
+                <th>Tokens</th>
+                <th>Cost</th>
+                <th>Latency</th>
+                <th>Composite</th>
+                <th>Rank</th>
+                <th>Final</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {bench.arms.map((a) => (
+                <tr key={a.variantId} className="border-t border-slate-800">
+                  <td className="py-2 font-medium text-slate-200">{a.variantId}</td>
+                  <td>{a.flow}</td>
+                  <td>{a.totalPromptTokens + a.totalCompletionTokens}</td>
+                  <td>{'$' + a.avgCostUsd.toFixed(3)}</td>
+                  <td>{a.avgLatencyMs === null ? '—' : a.avgLatencyMs + 'ms'}</td>
+                  <td>{a.composite === null ? '—' : a.composite.toFixed(1)}</td>
+                  <td>{a.rankingScore === null ? '—' : a.rankingScore.toFixed(1)}</td>
+                  <td className="font-semibold text-emerald-400">
+                    {a.finalScore === null ? '—' : a.finalScore.toFixed(1)}
+                  </td>
+                  <td>
+                    <button
+                      onClick={() => promote(a.variantId)}
+                      className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-white text-xs"
+                    >
+                      Promote
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+            <input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/repo" className={inputCls} />
+            <input value={pr} onChange={(e) => setPr(e.target.value)} placeholder="PR number" className={inputCls} />
+            <button
+              onClick={saveRanks}
+              className="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-white text-sm font-medium"
+            >
+              Save rankings
+            </button>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-4">
+            {arms.map((a) => (
+              <label key={a.variantId} className="inline-flex items-center gap-2 text-xs text-slate-400">
+                {a.variantId}
+                <select
+                  value={ranks[a.variantId] ?? 1}
+                  onChange={(e) => setRanks({ ...ranks, [a.variantId]: Number(e.target.value) })}
+                  className="rounded bg-surface-950 border border-slate-800 px-2 py-1 text-xs text-slate-200"
+                >
+                  {arms.map((_, i) => (
+                    <option key={i} value={i + 1}>
+                      {i + 1}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
