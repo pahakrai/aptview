@@ -31,11 +31,7 @@ build:
       context: .
       docker:
         dockerfile: apps/frontend/Dockerfile
-        target: development
-      sync:
-        manual:
-          - src: 'apps/frontend/src/**/*.{ts,tsx,css}'
-            dest: /app/
+        target: production
   local:
     useBuildkit: true
     push: false

@@ -292,15 +292,18 @@ An experiment arm (AuditStrategy) now optionally carries three more fields:
 
 - flow: 'sequential' | 'orchestrator' — the agent architecture being tested.
 - toolChain: { skills: string[], mcp: string[] } — which skills and MCP servers an
-  orchestrator arm may call through its LangGraph tool loop.
-- flowGraph: a v1 preset diagram ({ flow, version: 1 }); richer node/edge editing
-  (draw.io-style) lands in a later version.
+  orchestrator arm may call. Skills are the baseline; MCP is an optional add-on.
+- flowGraph: a node/edge DAG (nodes + edges + entry) that the executor interprets.
+  v1 ships two presets (sequential, orchestrator); richer draw.io-style editing
+  later just emits a FlowGraphSpec.
 
 - sequential = the fixed harness: diff -> guidelines -> one LLM call -> verdict.
 - orchestrator = planner + tool loop (skills + MCP) -> reviewer -> verdict. Every
   LLM call in the loop is token-accounted.
 
-Legacy arms (no flow field) behave exactly as before.
+The executor (flow-runner.service.ts) walks the graph via flow-graph.ts and pulls
+tools from tool-catalog.ts (skills) plus the MCP bridge. Legacy arms (no flow
+field) behave exactly as before.
 
 ### 8.2 Deliberate benchmark runs
 
@@ -361,6 +364,17 @@ decisions (approve / revise / cancel) are folded back into those rows — so a
 promoted architecture keeps accumulating live acceptance after promotion. That
 closes the lab -> plugin -> keep-learning loop.
 
+### 8.6 Module structure
+
+The experiment layer is split so the business core does not live in one class:
+
+- experiments.service.ts — live A/B (bucketing, runs, report, ranking).
+- promotions.service.ts — active flows + active_flow_runs (the plugin + flywheel).
+- notifications.service.ts — durable in-app notices.
+- benchmarks.processor.ts — BullMQ worker for async benchmark jobs.
+- flow-runner/ — flow-graph.ts (graph interpreter), tool-catalog.ts (tool
+  registry), flow-runner.service.ts (executor).
+
 ---
 
 ## 9. Revision history
@@ -375,4 +389,8 @@ Behavioral changes to the experiment layer and where each is defined above:
 | **Schema fix** | `experiment_runs` gained the `pr_number` column that the dedupe, human-decision correlation, and index always referenced but the table never had. Apply with `yarn db:push` / migration. | §3.10, §5 step 1 |
 | **Naming** | The per-arm `powered` flag was renamed `minSampleReached` to make clear it is a configured sample count, not statistical power. | §5 report output |
 | **Methodology note** | The report now returns a `caveat` stating the limits (relative baselines, sample target ≠ power, no multiple-comparison correction), rendered on the Experiments page. | §5, §6 |
-| **Tests** | `experiment-stats.spec.ts` unit-tests bucketing, CIs, cost, composite renormalization, and the winner rule (`node --test apps/backend/src/modules/experiments/__tests__/experiment-stats.spec.ts`). | — |
+| **Tests** | `experiment-stats.spec.ts` unit-tests bucketing, CIs, cost, composite renormalization, and the winner rule (`node --test apps/backend/src/modules/experiments/__tests__/experiment-stats.test.ts`). | — |
+| **Flow graph + tool catalog** | FlowGraphSpec became a node/edge DAG; the flow-runner now interprets it (flow-graph.ts) and draws tools from a centralized catalog (tool-catalog.ts) instead of hardcoding sequential/orchestrator. | §8.1, §8.6 |
+| **Async + flywheel** | Benchmark runs are queued (benchmark_jobs), cancellable, and write notifications; promoted flows record active_flow_runs and fold HITL decisions back in. | §8.5 |
+| **Decomposition** | ExperimentsService split into PromotionsService + NotificationsService. | §8.6 |
+| **Test infra** | Added jest config + devDeps; pure-logic specs run via node --test (flow-graph, tool-catalog, experiment-stats, experiment-ranking). | §8.6 |

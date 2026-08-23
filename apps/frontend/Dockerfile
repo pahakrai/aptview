@@ -3,9 +3,14 @@ FROM node:20-alpine AS deps
 WORKDIR /app
 
 COPY package.json yarn.lock .yarnrc.yml ./
+COPY apps/backend/package.json ./apps/backend/
 COPY apps/frontend/package.json ./apps/frontend/
+COPY apps/desktop/package.json ./apps/desktop/
+COPY libs/database-client/package.json ./libs/database-client/
+COPY libs/shared-types/package.json ./libs/shared-types/
+COPY libs/utils/package.json ./libs/utils/
 
-RUN corepack enable && yarn install --immutable
+RUN corepack enable && yarn install
 
 # ---- Stage 2: Build ----
 FROM node:20-alpine AS builder
@@ -31,9 +36,14 @@ RUN corepack enable
 
 COPY .yarnrc.yml ./
 COPY package.json yarn.lock ./
+COPY apps/backend/package.json ./apps/backend/
 COPY apps/frontend/package.json ./apps/frontend/
+COPY apps/desktop/package.json ./apps/desktop/
+COPY libs/database-client/package.json ./libs/database-client/
+COPY libs/shared-types/package.json ./libs/shared-types/
+COPY libs/utils/package.json ./libs/utils/
 
-RUN yarn install --immutable
+RUN yarn install
 
 COPY . .
 

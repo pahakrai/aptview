@@ -4,8 +4,13 @@ WORKDIR /app
 
 COPY package.json yarn.lock .yarnrc.yml ./
 COPY apps/backend/package.json ./apps/backend/
+COPY apps/frontend/package.json ./apps/frontend/
+COPY apps/desktop/package.json ./apps/desktop/
+COPY libs/database-client/package.json ./libs/database-client/
+COPY libs/shared-types/package.json ./libs/shared-types/
+COPY libs/utils/package.json ./libs/utils/
 
-RUN corepack enable && yarn install --immutable
+RUN corepack enable && yarn install
 
 # ---- Stage 2: Build ----
 FROM node:20-alpine AS builder
@@ -36,6 +41,8 @@ RUN apk add --no-cache kubectl curl python3 py3-pip && \
 COPY --from=builder /app/dist/apps/backend ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/apps/backend/package.json ./
+COPY --from=builder /app/apps/backend/drizzle.config.ts ./apps/backend/drizzle.config.ts
+COPY --from=builder /app/apps/backend/src/database ./apps/backend/src/database
 
 ENV NODE_ENV=production
 EXPOSE 3000
@@ -51,8 +58,13 @@ RUN corepack enable
 COPY .yarnrc.yml ./
 COPY package.json yarn.lock ./
 COPY apps/backend/package.json ./apps/backend/
+COPY apps/frontend/package.json ./apps/frontend/
+COPY apps/desktop/package.json ./apps/desktop/
+COPY libs/database-client/package.json ./libs/database-client/
+COPY libs/shared-types/package.json ./libs/shared-types/
+COPY libs/utils/package.json ./libs/utils/
 
-RUN yarn install --immutable
+RUN yarn install
 
 COPY . .
 

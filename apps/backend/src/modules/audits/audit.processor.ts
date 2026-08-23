@@ -345,7 +345,7 @@ export class AuditProcessor extends WorkerHost {
     // Parse CodeWhale's JSON output
     const sv = result.parsed as SandboxOutput | null;
 
-    const verdict: AuditVerdict = sv?.verdict ?? 'warning';
+    const verdict: AuditVerdict = sv?.verdict ?? AuditVerdict.WARNING;
     const totalViolations = sv?.totalViolations ?? 0;
     const errorCount = sv?.errorCount ?? 0;
     const warningCount = sv?.warningCount ?? 0;
@@ -470,11 +470,11 @@ export class AuditProcessor extends WorkerHost {
 
     let verdict: AuditVerdict;
     if (errorCount > 0) {
-      verdict = 'fail';
+      verdict = AuditVerdict.FAIL;
     } else if (warningCount > 0) {
-      verdict = 'warning';
+      verdict = AuditVerdict.WARNING;
     } else {
-      verdict = 'pass';
+      verdict = AuditVerdict.PASS;
     }
 
     // Compute scope creep
@@ -646,7 +646,7 @@ export class AuditProcessor extends WorkerHost {
     const durationMs = Date.now() - startTime;
 
     // Extract scores
-    const verdict: AuditVerdict = sd?.verdict ?? 'warning';
+    const verdict: AuditVerdict = sd?.verdict ?? AuditVerdict.WARNING;
     const totalViolations = sd?.totalViolations ?? 0;
     const errorCount = sd?.errorCount ?? 0;
     const warningCount = sd?.warningCount ?? 0;
@@ -766,7 +766,7 @@ export class AuditProcessor extends WorkerHost {
     const durationMs = Date.now() - startTime;
 
     // Extract scores (same shape as sandbox/SDK output)
-    const verdict: AuditVerdict = sd?.verdict ?? 'warning';
+    const verdict: AuditVerdict = sd?.verdict ?? AuditVerdict.WARNING;
     const totalViolations = sd?.totalViolations ?? 0;
     const errorCount = sd?.errorCount ?? 0;
     const warningCount = sd?.warningCount ?? 0;
