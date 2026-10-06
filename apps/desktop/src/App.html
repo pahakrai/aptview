@@ -309,6 +309,21 @@
       <div class="status-dot" style="background:#475569"></div>
       <span>No active review</span>
     </div>
+    <style>
+      .star-rating { display:flex; align-items:center; gap:6px; margin:8px 0; }
+      .star-label { color:#64748b; font-size:12px; }
+      .star { background:#1e293b; color:#64748b; border:1px solid #334155; border-radius:6px; padding:4px 9px; cursor:pointer; font-size:12px; font-family:inherit; transition:all 0.15s; }
+      .star:hover { border-color:#f59e0b; color:#fbbf24; }
+      .star.active { background:#f59e0b20; color:#fbbf24; border-color:#f59e0b; }
+    </style>
+    <div class="star-rating" id="star-rating">
+      <span class="star-label">Rate this review:</span>
+      <button class="star" data-value="1" onclick="setStarRating(1)">1★</button>
+      <button class="star" data-value="2" onclick="setStarRating(2)">2★</button>
+      <button class="star" data-value="3" onclick="setStarRating(3)">3★</button>
+      <button class="star" data-value="4" onclick="setStarRating(4)">4★</button>
+      <button class="star" data-value="5" onclick="setStarRating(5)">5★</button>
+    </div>
     <button class="btn btn-primary" id="btn-approve" disabled onclick="approveReview()">Approve &amp; Comment</button>
     <button class="btn btn-danger" id="btn-cancel" disabled onclick="cancelReview()">Cancel Review</button>
   </div>

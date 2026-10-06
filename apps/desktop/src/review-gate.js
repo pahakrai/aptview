@@ -17,6 +17,7 @@ let currentThreadId = null;
 let allReviews = [];           // All pending reviews from the server
 let socket = null;
 let pollingInterval = null;
+let selectedStarRating = null;
 
 // ===========================================================================
 // Electron status updates
@@ -250,6 +251,8 @@ function toggleReviewList() {
  */
 function selectReview(threadId) {
   currentThreadId = threadId;
+  selectedStarRating = null;
+  updateStarUI();
   const r = allReviews.find((r) => r.threadId === threadId);
   if (!r) return;
 
@@ -356,6 +359,21 @@ function updateTestSelection() {
   }
 }
 
+function updateStarUI() {
+  document.querySelectorAll('#star-rating .star').forEach((b) => {
+    b.classList.toggle('active', Number(b.dataset.value) === selectedStarRating);
+  });
+}
+
+function setStarRating(value) {
+  selectedStarRating = selectedStarRating === value ? null : value;
+  updateStarUI();
+}
+
+function getStarRating() {
+  return selectedStarRating;
+}
+
 async function approveReview() {
   if (!currentThreadId) return;
 
@@ -363,6 +381,7 @@ async function approveReview() {
   const testTypes = getSelectedTestTypes();
   const body = { action: 'approve' };
   if (notes.trim()) body.notes = notes.trim();
+  if (selectedStarRating) body.starRating = selectedStarRating;
   if (testTypes.length > 0) {
     body.generateTests = true;
     body.testTypes = testTypes;
@@ -435,10 +454,12 @@ async function cancelTestReview() {
 async function cancelReview() {
   if (!currentThreadId) return;
   try {
+    const body = { action: 'cancel' };
+    if (selectedStarRating) body.starRating = selectedStarRating;
     const res = await fetch(`${API_BASE}/reviews/${currentThreadId}/action`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'cancel' }),
+      body: JSON.stringify(body),
     });
 
     if (res.ok) {
@@ -486,7 +507,7 @@ async function reviseReview() {
     const res = await fetch(`${API_BASE}/reviews/${currentThreadId}/action`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'revise', feedback: feedback.trim() }),
+      body: JSON.stringify({ action: 'revise', feedback: feedback.trim(), ...(selectedStarRating ? { starRating: selectedStarRating } : {}) }),
     });
     const data = await res.json();
 
