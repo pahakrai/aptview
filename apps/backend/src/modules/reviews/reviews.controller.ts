@@ -86,6 +86,7 @@ export class ReviewsController implements OnGatewayConnection {
       feedback?: string;
       generateTests?: boolean;
       testTypes?: string[];
+      starRating?: number;
     },
   ) {
     switch (body.action) {
@@ -97,6 +98,7 @@ export class ReviewsController implements OnGatewayConnection {
           body.notes,
           body.generateTests,
           body.testTypes,
+          body.starRating,
         );
         this.server.emit('review:status', { threadId: id, status: 'posting' });
 
@@ -117,7 +119,7 @@ export class ReviewsController implements OnGatewayConnection {
         if (!body.feedback || !body.feedback.trim()) {
           return { threadId: id, status: 'error', message: 'Feedback is required when requesting a revision' };
         }
-        const { revisionCount, remaining } = await this.reviewsService.reviseReview(id, body.feedback);
+        const { revisionCount, remaining } = await this.reviewsService.reviseReview(id, body.feedback, body.starRating);
         return {
           threadId: id, status: 'revising', revisionCount, remaining,
           message: `Revision ${revisionCount} requested. ${remaining} round(s) remaining.`,
@@ -125,7 +127,7 @@ export class ReviewsController implements OnGatewayConnection {
       }
 
       case 'cancel': {
-        await this.reviewsService.cancelReview(id);
+        await this.reviewsService.cancelReview(id, body.starRating);
         this.server.emit('review:status', { threadId: id, status: 'cancelled' });
         return { threadId: id, status: 'cancelled', message: 'Review discarded' };
       }

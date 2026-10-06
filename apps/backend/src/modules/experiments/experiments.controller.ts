@@ -12,6 +12,7 @@ import { AuthGuard } from '@nestjs/passport';
 import { ExperimentsService } from './experiments.service';
 import { PromotionsService } from './promotions.service';
 import { NotificationsService } from './notifications.service';
+import { EvalService } from './eval.service';
 import type {
   AuditStrategy,
   ExperimentStatus,
@@ -24,6 +25,7 @@ export class ExperimentsController {
     private readonly experimentsService: ExperimentsService,
     private readonly promotionsService: PromotionsService,
     private readonly notificationsService: NotificationsService,
+    private readonly evalService: EvalService,
   ) {}
 
   @Get()
@@ -158,5 +160,28 @@ export class ExperimentsController {
   @UseGuards(AuthGuard('api-key'))
   async cancelBenchmark(@Param('id') id: string) {
     return this.experimentsService.cancelBenchmark(id);
+  }
+
+  @Get(':id/eval-report')
+  async evalReport(@Param('id') id: string) {
+    return this.evalService.getEvalReport(id);
+  }
+
+  @Post('telemetry')
+  @UseGuards(AuthGuard('api-key'))
+  async recordTelemetry(@Body() body: Record<string, unknown>) {
+    return this.evalService.recordTelemetry(body as never);
+  }
+
+  @Post(':id/references/generate')
+  @UseGuards(AuthGuard('api-key'))
+  async generateReferences(@Param('id') _id: string) {
+    return this.evalService.generateReferences();
+  }
+
+  @Post(':id/reference-evals/run')
+  @UseGuards(AuthGuard('api-key'))
+  async runReferenceEval(@Param('id') id: string) {
+    return this.evalService.runReferenceEval(id);
   }
 }

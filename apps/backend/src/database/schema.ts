@@ -6,6 +6,7 @@ import {
   timestamp,
   integer,
   boolean,
+  real,
   jsonb,
   index,
   uniqueIndex,
@@ -87,6 +88,11 @@ export const benchmarkJobStatusEnum = pgEnum('benchmark_job_status', [
   'completed',
   'failed',
   'cancelled',
+]);
+
+export const referenceTypeEnum = pgEnum('reference_type', [
+  'gold',
+  'silver',
 ]);
 
 // ============================================================================
@@ -584,4 +590,89 @@ export const notifications = pgTable('notifications', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
   notificationsOrgIdx: index('notifications_org_idx').on(table.organizationId),
+}));
+
+// ============================================================================
+// Reference-based evaluation — implicit labeling from production data
+// ============================================================================
+
+/**
+ * review_telemetry — structured log of one production review interaction.
+ * The human action (accept / revise / cancel) + optional star rating are the
+ * implicit labels; gold/silver references are promoted from these rows.
+ */
+export const reviewTelemetry = pgTable('review_telemetry', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  traceId: varchar('trace_id', { length: 255 }).notNull().unique(),
+  experimentId: uuid('experiment_id').references(() => experiments.id, {
+    onDelete: 'set null',
+  }),
+  variantId: varchar('variant_id', { length: 50 }),
+  organizationId: uuid('organization_id').references(() => organizations.id, {
+    onDelete: 'set null',
+  }),
+  codeSnippet: text('code_snippet'),
+  taskDescription: text('task_description'),
+  codeStandards: jsonb('code_standards').$type<Record<string, unknown>>(),
+  aiReviewOutput: text('ai_review_output'),
+  humanAction: reviewDecisionActionEnum('human_action'),
+  humanModifiedReview: text('human_modified_review'),
+  starRating: integer('star_rating'),
+  latencyMs: integer('latency_ms'),
+  promptTokens: integer('prompt_tokens'),
+  completionTokens: integer('completion_tokens'),
+  costUsd: real('cost_usd'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  reviewTelemetryExperimentIdx: index('review_telemetry_experiment_idx').on(
+    table.experimentId,
+  ),
+  reviewTelemetryActionIdx: index('review_telemetry_action_idx').on(table.humanAction),
+}));
+
+/**
+ * gold_standard_references — auto-promoted reference cases.
+ *   gold   = human modified the review (final version is closest to truth).
+ *   silver = human accepted without modification (weak but abundant).
+ */
+export const goldStandardReferences = pgTable('gold_standard_references', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  traceId: varchar('trace_id', { length: 255 }).notNull().unique(),
+  codeSnippet: text('code_snippet'),
+  taskDescription: text('task_description'),
+  codeStandards: jsonb('code_standards').$type<Record<string, unknown>>(),
+  referenceReview: text('reference_review').notNull(),
+  referenceType: referenceTypeEnum('reference_type').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+/**
+ * reference_evals — one row per (reference, variant): the variant's output
+ * scored against the reference (F1 / lexical similarity / latency / cost).
+ */
+export const referenceEvals = pgTable('reference_evals', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  experimentId: uuid('experiment_id')
+    .notNull()
+    .references(() => experiments.id, { onDelete: 'cascade' }),
+  referenceId: uuid('reference_id')
+    .notNull()
+    .references(() => goldStandardReferences.id, { onDelete: 'cascade' }),
+  variantId: varchar('variant_id', { length: 50 }).notNull(),
+  strategySnapshot: jsonb('strategy_snapshot').$type<AuditStrategy>(),
+  precision: real('precision'),
+  recall: real('recall'),
+  f1: real('f1'),
+  lexicalSimilarity: real('lexical_similarity'),
+  latencyMs: integer('latency_ms'),
+  promptTokens: integer('prompt_tokens'),
+  completionTokens: integer('completion_tokens'),
+  costUsd: real('cost_usd'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  referenceEvalsExperimentIdx: index('reference_evals_experiment_idx').on(
+    table.experimentId,
+  ),
+  referenceEvalsRefIdx: index('reference_evals_ref_idx').on(table.referenceId),
+  referenceEvalsVariantIdx: index('reference_evals_variant_idx').on(table.variantId),
 }));

@@ -375,6 +375,31 @@ The experiment layer is split so the business core does not live in one class:
 - flow-runner/ — flow-graph.ts (graph interpreter), tool-catalog.ts (tool
   registry), flow-runner.service.ts (executor).
 
+### 8.7 Reference-based evaluation (implicit labeling)
+
+Every production review interaction is logged as review_telemetry (trace_id,
+variant, code snippet, task, standards, AI output, human action, star rating,
+latency, tokens, cost). High-quality interactions are auto-promoted into a
+growing reference set:
+
+- gold   = human modified the review (action = revise, rating >= 3) — the
+  human-modified review is the reference (closest to truth).
+- silver = human accepted without change (action = approve, rating >= 4) — the
+  AI output is the reference (weaker but abundant).
+
+Variants are then replayed against the references; each output is scored with
+token-overlap precision/recall/F1 and edit-distance similarity (eval-metrics.ts),
+plus latency and cost. GET /experiments/:id/eval-report returns per-variant F1
+(mean + 95% CI), precision, recall, latency, cost, and — versus control — a
+Welch t-test (t, p), Cohen's d for F1 and latency.
+
+POST /experiments/telemetry records a row; POST /experiments/:id/references/generate
+promotes references; POST /experiments/:id/reference-evals/run replays variants.
+
+The references measure what humans accept, not objective correctness — gold
+(human-modified) is stronger than silver (accepted). This is documented as a
+caveat rather than hidden.
+
 ---
 
 ## 9. Revision history
@@ -394,3 +419,4 @@ Behavioral changes to the experiment layer and where each is defined above:
 | **Async + flywheel** | Benchmark runs are queued (benchmark_jobs), cancellable, and write notifications; promoted flows record active_flow_runs and fold HITL decisions back in. | §8.5 |
 | **Decomposition** | ExperimentsService split into PromotionsService + NotificationsService. | §8.6 |
 | **Test infra** | Added jest config + devDeps; pure-logic specs run via node --test (flow-graph, tool-catalog, experiment-stats, experiment-ranking). | §8.6 |
+| **Reference eval** | review_telemetry + gold/silver references + reference_evals; replay variants and compare with F1 / t-test / Cohen's d (eval-metrics.ts, eval.service.ts). | §8.7 |

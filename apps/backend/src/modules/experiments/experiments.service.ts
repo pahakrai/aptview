@@ -27,6 +27,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { NotificationsService } from './notifications.service';
 import { PromotionsService } from './promotions.service';
+import { EvalService } from './eval.service';
 import {
   clamp01,
   composeScore,
@@ -92,6 +93,13 @@ export interface ReviewDecisionInput {
   action: ReviewDecisionAction;
   revisionCount: number;
   note?: string | null;
+  /** Optional telemetry fields captured for the reference-based eval flow. */
+  starRating?: number | null;
+  modifiedReview?: string | null;
+  aiReviewOutput?: string | null;
+  codeSnippet?: string | null;
+  taskDescription?: string | null;
+  codeStandards?: Record<string, unknown> | null;
 }
 
 type ExperimentRunRow = typeof experimentRuns.$inferSelect;
@@ -134,6 +142,7 @@ export class ExperimentsService {
     @InjectQueue('benchmarks') private readonly benchmarksQueue: Queue,
     private readonly notifications: NotificationsService,
     private readonly promotions: PromotionsService,
+    private readonly evalService: EvalService,
   ) {}
 
   /**
@@ -322,6 +331,18 @@ export class ExperimentsService {
       humanAccepted,
       input.revisionCount,
     );
+
+    // Capture production telemetry for the reference-based eval flow.
+    await this.evalService.recordTelemetry({
+      traceId: input.threadId,
+      humanAction: input.action,
+      humanModifiedReview: input.modifiedReview ?? input.note ?? null,
+      starRating: input.starRating ?? null,
+      aiReviewOutput: input.aiReviewOutput ?? null,
+      codeSnippet: input.codeSnippet ?? null,
+      taskDescription: input.taskDescription ?? null,
+      codeStandards: input.codeStandards ?? null,
+    });
   }
 
   /**

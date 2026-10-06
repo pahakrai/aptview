@@ -29,6 +29,9 @@ export interface PendingReview {
   targetBranch: string;
   author: string;
   reviewText: string;
+  diffContent?: string;
+  taskDescription?: string;
+  guidelines?: string;
   status: 'awaiting_approval' | 'posting' | 'done' | 'cancelled';
   revisionCount: number;
   createdAt: string;
@@ -159,7 +162,11 @@ export class ReviewsService {
   /**
    * Request a code review revision.
    */
-  async reviseReview(threadId: string, feedback: string): Promise<{ revisionCount: number; remaining: number }> {
+  async reviseReview(
+    threadId: string,
+    feedback: string,
+    starRating?: number,
+  ): Promise<{ revisionCount: number; remaining: number }> {
     const review = this.reviews.get(threadId);
     if (!review) throw new Error(`Review ${threadId} not found`);
     if (review.status !== 'awaiting_approval') {
@@ -184,6 +191,12 @@ export class ReviewsService {
       action: 'revise',
       revisionCount: newCount,
       note: feedback,
+      starRating: starRating ?? null,
+      aiReviewOutput: review.reviewText,
+      modifiedReview: feedback,
+      codeSnippet: review.diffContent ?? null,
+      taskDescription: review.taskDescription ?? null,
+      codeStandards: review.guidelines ? { guidelines: review.guidelines } : null,
     });
 
     if (this.webSocketServer) {
@@ -203,6 +216,7 @@ export class ReviewsService {
     notes?: string,
     generateTests?: boolean,
     testTypes?: string[],
+    starRating?: number,
   ): Promise<void> {
     const review = this.reviews.get(threadId);
     if (!review) throw new Error(`Review ${threadId} not found`);
@@ -217,6 +231,12 @@ export class ReviewsService {
       action: 'approve',
       revisionCount: review.revisionCount,
       note: notes,
+      starRating: starRating ?? null,
+      aiReviewOutput: review.reviewText,
+      modifiedReview: notes ?? null,
+      codeSnippet: review.diffContent ?? null,
+      taskDescription: review.taskDescription ?? null,
+      codeStandards: review.guidelines ? { guidelines: review.guidelines } : null,
     });
 
     await this.reviewQueue.add('review-post', { threadId, notes, generateTests, testTypes });
@@ -239,7 +259,7 @@ export class ReviewsService {
     }
   }
 
-  async cancelReview(threadId: string): Promise<void> {
+  async cancelReview(threadId: string, starRating?: number): Promise<void> {
     const review = this.reviews.get(threadId);
     if (!review) throw new Error(`Review ${threadId} not found`);
     review.status = 'cancelled';
@@ -251,6 +271,11 @@ export class ReviewsService {
       prNumber: review.prNumber,
       action: 'cancel',
       revisionCount: review.revisionCount,
+      starRating: starRating ?? null,
+      aiReviewOutput: review.reviewText,
+      codeSnippet: review.diffContent ?? null,
+      taskDescription: review.taskDescription ?? null,
+      codeStandards: review.guidelines ? { guidelines: review.guidelines } : null,
     });
   }
 

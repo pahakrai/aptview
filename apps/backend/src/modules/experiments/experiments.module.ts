@@ -7,6 +7,7 @@ import { ExperimentsController } from './experiments.controller';
 import { BenchmarksProcessor } from './benchmarks.processor';
 import { PromotionsService } from './promotions.service';
 import { NotificationsService } from './notifications.service';
+import { EvalService } from './eval.service';
 
 @Module({
   imports: [
@@ -20,7 +21,8 @@ import { NotificationsService } from './notifications.service';
     BenchmarksProcessor,
     PromotionsService,
     NotificationsService,
+    EvalService,
   ],
-  exports: [ExperimentsService, PromotionsService, NotificationsService],
+  exports: [ExperimentsService, PromotionsService, NotificationsService, EvalService],
 })
 export class ExperimentsModule {}

@@ -114,6 +114,9 @@ export class ReviewProcessor extends WorkerHost {
       targetBranch: data.targetBranch,
       author: data.author,
       reviewText: result.reviewText || '',
+      diffContent: data.diffContent,
+      taskDescription: data.taskDescription,
+      guidelines: data.guidelines,
       status: 'awaiting_approval',
     });
 
@@ -159,6 +162,9 @@ export class ReviewProcessor extends WorkerHost {
       targetBranch: currentState.targetBranch,
       author: currentState.author,
       reviewText: result.reviewText || '',
+      diffContent: currentState.diffContent,
+      taskDescription: currentState.taskDescription,
+      guidelines: currentState.guidelines,
       status: 'awaiting_approval',
     });
 
