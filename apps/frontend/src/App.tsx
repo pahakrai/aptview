@@ -1,10 +1,11 @@
 import { Routes, Route, Link, useLocation } from 'react-router-dom';
-import { Shield, LayoutDashboard, ScrollText, FileCheck, Settings, FlaskConical } from 'lucide-react';
+import { Shield, LayoutDashboard, ScrollText, FileCheck, Settings, FlaskConical, Layers } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import AuditHistory from './pages/AuditHistory';
 import StandardsList from './pages/StandardsList';
 import SettingsPage from './pages/Settings';
 import Experiments from './pages/Experiments';
+import AgentStructures from './pages/AgentStructures';
 
 function App() {
   const location = useLocation();
@@ -14,6 +15,7 @@ function App() {
     { to: '/audits', label: 'Audit History', icon: ScrollText },
     { to: '/standards', label: 'Standards', icon: FileCheck },
     { to: '/experiments', label: 'Experiments', icon: FlaskConical },
+    { to: '/agent-structures', label: 'Agent Structures', icon: Layers },
   ];
 
   return (
@@ -82,6 +84,7 @@ function App() {
           <Route path="/audits" element={<AuditHistory />} />
           <Route path="/standards" element={<StandardsList />} />
           <Route path="/experiments" element={<Experiments />} />
+          <Route path="/agent-structures" element={<AgentStructures />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </main>

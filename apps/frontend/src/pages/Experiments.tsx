@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import {
   FlaskConical,
   Trophy,
@@ -15,6 +16,12 @@ import {
 } from 'lucide-react';
 import type { Experiment, AuditStrategy, MetricsWeights } from '@aigov/shared-types';
 import api from '../lib/api';
+
+interface StructureOption {
+  id: string;
+  name: string;
+  strategy: AuditStrategy;
+}
 
 // ---------------------------------------------------------------------------
 // Report shape returned by GET /experiments/:id/report
@@ -132,6 +139,13 @@ export default function Experiments() {
   const [newFlow, setNewFlow] = useState<'sequential' | 'orchestrator'>('orchestrator');
   const [newSkills, setNewSkills] = useState('');
   const [newMcp, setNewMcp] = useState('');
+  const [structures, setStructures] = useState<StructureOption[]>([]);
+  const [structName, setStructName] = useState('');
+  const [structRollout, setStructRollout] = useState(100);
+  const [structMinSample, setStructMinSample] = useState(50);
+  const [structControl, setStructControl] = useState('');
+  const [structTreatments, setStructTreatments] = useState<string[]>([]);
+  const [experimentsEnabled, setExperimentsEnabled] = useState(false);
 
   const refresh = () => {
     api
@@ -177,6 +191,38 @@ export default function Experiments() {
     }
   };
 
+  const createFromStructures = async () => {
+    if (!structName.trim() || !structControl) return;
+    setCreating(true);
+    try {
+      await api.post('/experiments/from-structures', {
+        name: structName.trim(),
+        rolloutPercent: structRollout,
+        minSampleSize: structMinSample,
+        controlStructureId: structControl,
+        treatmentStructureIds: structTreatments.filter((id) => !!id),
+        metricsWeights: {
+          accuracy: 0.35,
+          quality: 0.35,
+          acceptance: 0.15,
+          speed: 0.075,
+          cost: 0.075,
+        },
+      });
+      setStructName('');
+      setStructTreatments([]);
+      refresh();
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const toggleExperimentsEnabled = async () => {
+    const next = !experimentsEnabled;
+    setExperimentsEnabled(next);
+    await api.put('/settings/experiments_enabled', { value: String(next) });
+  };
+
   const setStatus = async (id: string, status: string) => {
     await api.patch(`/experiments/${id}`, { status });
     refresh();
@@ -199,6 +245,20 @@ export default function Experiments() {
       })
       .catch(() => setExperiments([]))
       .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    api
+      .get<StructureOption[]>('/agent-structures')
+      .then((res) => {
+        setStructures(res.data);
+        if (res.data[0] && !structControl) setStructControl(res.data[0].id);
+      })
+      .catch(() => {});
+    api
+      .get<{ key: string; value: string | null }>('/settings/experiments_enabled')
+      .then((res) => setExperimentsEnabled(res.data.value === 'true'))
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -230,6 +290,148 @@ export default function Experiments() {
             review and reviewer acceptance.
           </p>
         </div>
+      </div>
+
+      {/* A/B toggle */}
+      <div className="card p-4 mb-6 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <FlaskConical className="w-5 h-5 text-emerald-400" />
+          <div>
+            <p className="text-sm font-medium text-slate-200">Live A/B testing</p>
+            <p className="text-xs text-slate-500">
+              Bucket live PR review traffic across the running experiment arms.
+            </p>
+          </div>
+        </div>
+        <button
+          onClick={toggleExperimentsEnabled}
+          className={
+            'px-4 py-2 rounded-lg text-sm font-medium ' +
+            (experimentsEnabled
+              ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+              : 'bg-slate-800 hover:bg-slate-700 text-slate-400')
+          }
+        >
+          {experimentsEnabled ? 'Enabled' : 'Disabled'}
+        </button>
+      </div>
+
+      {/* New experiment from agent structures */}
+      <div className="card p-4 mb-6">
+        <div className="flex items-center gap-2 mb-3">
+          <Layers className="w-4 h-4 text-emerald-400" />
+          <h2 className="text-sm font-semibold text-white">
+            Create from agent structures
+          </h2>
+        </div>
+        {structures.length === 0 ? (
+          <p className="text-xs text-slate-600">
+            No agent structures yet. Design some on the{' '}
+            <Link to="/agent-structures" className="text-emerald-400 hover:underline">
+              Agent Structures
+            </Link>{' '}
+            page, then pick a control and any number of treatment arms here.
+          </p>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="flex-1 min-w-[200px]">
+                <label className="text-xs text-slate-500">Experiment name</label>
+                <input
+                  value={structName}
+                  onChange={(e) => setStructName(e.target.value)}
+                  placeholder="e.g. Orchestrator vs Sequential"
+                  className="mt-1 w-full rounded-lg bg-surface-950 border border-slate-800 px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500">Rollout %</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={structRollout}
+                  onChange={(e) => setStructRollout(Number(e.target.value))}
+                  className="mt-1 w-24 rounded-lg bg-surface-950 border border-slate-800 px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500">Min sample</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={structMinSample}
+                  onChange={(e) => setStructMinSample(Number(e.target.value))}
+                  className="mt-1 w-24 rounded-lg bg-surface-950 border border-slate-800 px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-end gap-3 mt-3">
+              <div className="w-56">
+                <label className="text-xs text-slate-500">Control structure</label>
+                <select
+                  value={structControl}
+                  onChange={(e) => setStructControl(e.target.value)}
+                  className="mt-1 w-full rounded-lg bg-surface-950 border border-slate-800 px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-emerald-500"
+                >
+                  {structures.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <button
+                onClick={createFromStructures}
+                disabled={creating || !structName.trim() || !structControl}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Plus className="w-4 h-4" /> Create draft
+              </button>
+            </div>
+
+            <div className="mt-3">
+              <p className="text-xs text-slate-500 mb-1">
+                Treatment structures ({structTreatments.length})
+              </p>
+              {structTreatments.map((tId, i) => (
+                <div key={i} className="flex items-end gap-2 mb-2">
+                  <select
+                    value={tId}
+                    onChange={(e) =>
+                      setStructTreatments((prev) =>
+                        prev.map((x, j) => (j === i ? e.target.value : x))
+                      )
+                    }
+                    className="w-56 rounded-lg bg-surface-950 border border-slate-800 px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-emerald-500"
+                  >
+                    <option value="">— choose —</option>
+                    {structures.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() =>
+                      setStructTreatments((prev) => prev.filter((_, j) => j !== i))
+                    }
+                    className="px-2 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 text-xs"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+              <button
+                onClick={() => setStructTreatments((prev) => [...prev, ''])}
+                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs"
+              >
+                <Plus className="w-3.5 h-3.5" /> Add treatment
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
       {/* New experiment */}
