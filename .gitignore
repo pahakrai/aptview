@@ -79,3 +79,8 @@ __pycache__/
 
 # Agent workspace
 .codewhale/
+
+# Local yarn/corepack caches (sandbox-local, not source)
+.corepack/
+.yarnglobal/
+.yarncache/

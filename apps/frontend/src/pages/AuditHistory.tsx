@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { CheckCircle, XCircle, AlertTriangle, Clock, ShieldCheck, Gauge, Target } from 'lucide-react';
+import { CheckCircle, XCircle, AlertTriangle, ShieldCheck } from 'lucide-react';
 import type { AiAudit, PaginatedResponse } from '@aigov/shared-types';
 import api from '../lib/api';
 

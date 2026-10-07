@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@aigov/shared-types": "*",
+    "@xyflow/react": "^12.12.0",
     "axios": "^1.7.0",
     "lucide-react": "^0.378.0",
     "react": "^18.3.0",

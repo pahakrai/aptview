@@ -8,8 +8,9 @@ import type {
   AuditEngine,
   PromptVariant,
   ToolCatalogEntry,
-  ToolConfigField,
 } from '@aigov/shared-types';
+import { ConfigField } from '../components/ConfigField';
+import AgentCanvas from './AgentCanvas';
 
 interface Structure {
   id: string;
@@ -62,6 +63,7 @@ export default function AgentStructures() {
   const [catalog, setCatalog] = useState<ToolCatalog>({ skills: [], mcp: [] });
   const [f, setF] = useState<FormState>(empty);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [mode, setMode] = useState<'form' | 'canvas'>('form');
   const [discovered, setDiscovered] = useState<Record<string, Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>>>({});
   const [discovering, setDiscovering] = useState<string | null>(null);
 
@@ -182,12 +184,34 @@ export default function AgentStructures() {
 
   const selectedTools = [...f.skills, ...f.mcp];
 
+  if (mode === 'canvas') {
+    return (
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="flex items-center justify-between mb-8">
+          <div>
+            <h1 className="text-2xl font-bold text-white">Agent Structures</h1>
+            <p className="text-sm text-slate-500 mt-1">Visual builder: drag connectors + guardrails onto the agent.</p>
+          </div>
+          <div className="flex items-center gap-1 rounded-lg border border-slate-800 p-1">
+            <button onClick={() => setMode('form')} className="text-slate-400 hover:text-slate-200 px-3 py-1.5 rounded-md text-sm font-medium">Form</button>
+            <button className="bg-slate-800 text-white px-3 py-1.5 rounded-md text-sm font-medium">Canvas</button>
+          </div>
+        </div>
+        <AgentCanvas />
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-bold text-white">Agent Structures</h1>
           <p className="text-sm text-slate-500 mt-1">Design reusable review-agent architectures (flow + model + tools).</p>
+        </div>
+        <div className="flex items-center gap-1 rounded-lg border border-slate-800 p-1">
+          <button className="bg-slate-800 text-white px-3 py-1.5 rounded-md text-sm font-medium">Form</button>
+          <button onClick={() => setMode('canvas')} className="text-slate-400 hover:text-slate-200 px-3 py-1.5 rounded-md text-sm font-medium">Canvas</button>
         </div>
       </div>
 
@@ -374,76 +398,4 @@ export default function AgentStructures() {
   );
 }
 
-const fieldCls =
-  'mt-1 w-full rounded-lg bg-surface-950 border border-slate-800 px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500';
 
-function ConfigField({
-  field,
-  value,
-  onChange,
-}: {
-  field: ToolConfigField;
-  value: unknown;
-  onChange: (v: unknown) => void;
-}) {
-  const label = (
-    <label className="text-xs text-slate-500" title={field.description}>{field.label}</label>
-  );
-
-  if (field.type === 'boolean') {
-    return (
-      <label className="flex items-center gap-2 mt-2 cursor-pointer">
-        <input type="checkbox" checked={value === true} onChange={(e) => onChange(e.target.checked)} className="rounded border-slate-700 bg-surface-950" />
-        <span className="text-xs text-slate-400">{field.label}</span>
-      </label>
-    );
-  }
-
-  if (field.type === 'enum') {
-    return (
-      <div className="mt-2">
-        {label}
-        <select value={String(value ?? field.default ?? '')} onChange={(e) => onChange(e.target.value)} className={fieldCls}>
-          {(field.enumValues ?? []).map((v) => <option key={v} value={v}>{v}</option>)}
-        </select>
-      </div>
-    );
-  }
-
-  const textValue = value === undefined || value === null ? '' : String(value);
-
-  if (field.type === 'number') {
-    return (
-      <div className="mt-2">
-        {label}
-        <input type="number" value={textValue} onChange={(e) => onChange(e.target.value === '' ? undefined : Number(e.target.value))} className={fieldCls} placeholder={field.placeholder} />
-      </div>
-    );
-  }
-
-  if (field.type === 'secretRef') {
-    return (
-      <div className="mt-2">
-        {label}
-        <input value={textValue} onChange={(e) => onChange(e.target.value)} className={fieldCls} placeholder={field.placeholder ?? 'env:VAR_NAME'} />
-        <p className="text-[11px] text-slate-600 mt-1">Store a reference (env:VAR), not the raw secret.</p>
-      </div>
-    );
-  }
-
-  if (field.type === 'text') {
-    return (
-      <div className="mt-2">
-        {label}
-        <textarea rows={2} value={textValue} onChange={(e) => onChange(e.target.value)} className={fieldCls} placeholder={field.placeholder} />
-      </div>
-    );
-  }
-
-  return (
-    <div className="mt-2">
-      {label}
-      <input value={textValue} onChange={(e) => onChange(e.target.value)} className={fieldCls} placeholder={field.placeholder} />
-    </div>
-  );
-}
