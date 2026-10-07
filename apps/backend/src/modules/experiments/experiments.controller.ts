@@ -100,7 +100,7 @@ export class ExperimentsController {
       name: string;
       organizationId?: string | null;
       controlStructureId: string;
-      treatmentStructureId: string;
+      treatmentStructureIds: string[];
       rolloutPercent?: number;
       minSampleSize?: number;
       metricsWeights?: MetricsWeights;

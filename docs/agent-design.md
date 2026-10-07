@@ -42,6 +42,10 @@ Structures are stored in the agent_structures table and managed by the
 | PATCH | /agent-structures/:id | edit name/description/strategy/isActive |
 | DELETE | /agent-structures/:id | remove |
 
+GET /tool-catalog returns the available skills and MCP servers an orchestrator
+structure may reference in its toolChain (skills + MCP are still introduced via
+the structure's toolChain.skills and toolChain.mcp arrays).
+
 This is the "design page" backend: design multiple structures, save them, and
 edit their variables (flow, graph, tools, model, temperature, prompt)
 independently of any experiment.
@@ -50,21 +54,23 @@ independently of any experiment.
 
 ## 3. Selecting two structures for an A/B test
 
-POST /experiments/from-structures takes two saved structure ids and creates an
-experiment that runs them head-to-head:
+POST /experiments/from-structures takes one control structure and N treatment
+structure ids, and creates an experiment that runs them head-to-head (default
+N=1, but you can compare 2 or more treatments):
 
     {
       "name": "orchestrator vs sequential",
       "controlStructureId": "uuid of structure A",
-      "treatmentStructureId": "uuid of structure B",
+      "treatmentStructureIds": ["uuid of structure B", "uuid of structure C"],
       "rolloutPercent": 100,
       "minSampleSize": 50,
       "metricsWeights": { "accuracy": 0.35, "quality": 0.35, "acceptance": 0.15, "speed": 0.075, "cost": 0.075 }
     }
 
-The backend resolves the two structures into control/treatment strategies and
-stores them on the experiment. Live review traffic is then deterministically
-bucketed (control vs treatment) per PR.
+The backend resolves the structures into control/treatment strategies, stores
+the snapshots, and records control_structure_id + treatment_structure_ids for
+provenance (which designs this experiment actually ran). Live review traffic is
+then deterministically bucketed (control vs treatments) per PR.
 
 ---
 
@@ -72,8 +78,10 @@ bucketed (control vs treatment) per PR.
 
 Two levels:
 
-1. Master switch = the EXPERIMENTS_ENABLED env var. Off (default) means the
-   audit/review pipeline is untouched and no traffic is bucketed.
+1. Master switch = the persisted 'experiments_enabled' setting, configurable at
+   runtime via PUT /settings/experiments_enabled { "value": "true" | "false" }
+   (no redeploy). isEnabled() reads that first, then falls back to the
+   EXPERIMENTS_ENABLED env var (default off).
 2. Per-experiment status = draft -> running -> paused/completed. A running
    experiment (with the master switch on) activates bucketing; pausing stops new
    traffic from being bucketed while keeping collected data.

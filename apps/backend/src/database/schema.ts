@@ -370,6 +370,10 @@ export const experiments = pgTable('experiments', {
     .$type<AuditStrategy[]>()
     .default([])
     .notNull(),
+  controlStructureId: uuid('control_structure_id').references(() => agentStructures.id, {
+    onDelete: 'set null',
+  }),
+  treatmentStructureIds: jsonb('treatment_structure_ids').$type<string[]>(),
   metricsWeights: jsonb('metrics_weights').$type<MetricsWeights>().notNull(),
   startedAt: timestamp('started_at'),
   endedAt: timestamp('ended_at'),
@@ -397,6 +401,17 @@ export const agentStructures = pgTable('agent_structures', {
 }, (table) => ({
   agentStructuresOrgIdx: index('agent_structures_org_idx').on(table.organizationId),
 }));
+
+/**
+ * settings — persisted feature flags / config toggles (e.g. experiments_enabled).
+ * Read by the app at runtime so a configuration page can toggle features
+ * without an env-var redeploy.
+ */
+export const settings = pgTable('settings', {
+  key: varchar('key', { length: 100 }).primaryKey(),
+  value: text('value'),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
 
 /**
  * experiment_runs — one observation per audited PR that hit a variant bucket.

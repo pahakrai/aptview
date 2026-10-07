@@ -16,6 +16,7 @@ import { LogAnalyzerModule } from './modules/log-analyzer/log-analyzer.module';
 import { SsoModule } from './modules/sso/sso.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { AgentStructuresModule } from './modules/agent-structures/agent-structures.module';
+import { SettingsModule } from './modules/settings/settings.module';
 import { HealthController } from './modules/health.controller';
 
 @Module({
@@ -53,6 +54,7 @@ import { HealthController } from './modules/health.controller';
     SsoModule,
     MetricsModule,
     AgentStructuresModule,
+    SettingsModule,
   ],
   controllers: [HealthController],
 })

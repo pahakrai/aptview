@@ -30,6 +30,7 @@ import { NotificationsService } from './notifications.service';
 import { PromotionsService } from './promotions.service';
 import { EvalService } from './eval.service';
 import { MetricsService } from '../metrics/metrics.service';
+import { SettingsService } from '../settings/settings.service';
 import { logEvent } from '../../common/structured-log';
 import {
   clamp01,
@@ -148,12 +149,16 @@ export class ExperimentsService {
     private readonly promotions: PromotionsService,
     private readonly evalService: EvalService,
     private readonly metrics: MetricsService,
+    private readonly settings: SettingsService,
   ) {}
 
   /**
-   * Global kill-switch. Reads `EXPERIMENTS_ENABLED` (default: off).
+   * Global kill-switch. Reads the persisted 'experiments_enabled' setting first
+   * (configurable from the UI), then falls back to the EXPERIMENTS_ENABLED env.
    */
-  isEnabled(): boolean {
+  async isEnabled(): Promise<boolean> {
+    const persisted = await this.settings.getBoolean('experiments_enabled');
+    if (persisted !== null) return persisted;
     return this.configService.get<string>('EXPERIMENTS_ENABLED') === 'true';
   }
 
@@ -161,7 +166,7 @@ export class ExperimentsService {
    * Resolve the running experiment for an org, or null → untouched production path.
    */
   async resolveExperiment(organizationId: string) {
-    if (!this.isEnabled()) return null;
+    if (!(await this.isEnabled())) return null;
 
     // Prefer the org's own running experiment over a global one; a newer
     // global experiment must not shadow an org-level decision.
@@ -708,27 +713,41 @@ export class ExperimentsService {
     return exp;
   }
 
-  /** Create an A/B experiment by selecting two saved agent structures. */
+  /**
+   * Create an A/B experiment from saved agent structures: one control + N
+   * treatments. Structure ids are stored for provenance (which designs this
+   * experiment actually ran), alongside the resolved strategy snapshots.
+   */
   async createFromStructures(input: {
     name: string;
     organizationId?: string | null;
     controlStructureId: string;
-    treatmentStructureId: string;
+    treatmentStructureIds: string[];
     rolloutPercent?: number;
     minSampleSize?: number;
     metricsWeights?: MetricsWeights;
   }) {
     const control = await this.getStructureStrategy(input.controlStructureId);
-    const treatment = await this.getStructureStrategy(input.treatmentStructureId);
-    return this.create({
-      name: input.name,
-      organizationId: input.organizationId,
-      rolloutPercent: input.rolloutPercent,
-      minSampleSize: input.minSampleSize,
-      controlStrategy: control,
-      treatmentStrategies: [treatment],
-      metricsWeights: input.metricsWeights,
-    });
+    const treatments = await Promise.all(
+      input.treatmentStructureIds.map((id) => this.getStructureStrategy(id)),
+    );
+
+    const [exp] = await db
+      .insert(experiments)
+      .values({
+        name: input.name,
+        organizationId: input.organizationId ?? null,
+        status: 'draft',
+        rolloutPercent: input.rolloutPercent ?? 0,
+        minSampleSize: input.minSampleSize ?? 50,
+        controlStrategy: control,
+        treatmentStrategies: treatments,
+        controlStructureId: input.controlStructureId,
+        treatmentStructureIds: input.treatmentStructureIds,
+        metricsWeights: input.metricsWeights ?? DEFAULT_METRICS_WEIGHTS,
+      })
+      .returning();
+    return exp;
   }
 
   private async getStructureStrategy(id: string): Promise<AuditStrategy> {
