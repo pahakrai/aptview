@@ -382,7 +382,7 @@ export interface ToolConfigField {
   key: string;
   label: string;
   /** UI control type. */
-  type: 'string' | 'text' | 'number' | 'boolean' | 'enum' | 'secret';
+  type: 'string' | 'text' | 'number' | 'boolean' | 'enum' | 'secretRef';
   description?: string;
   required?: boolean;
   /** Default value (used when the user leaves the field blank). */

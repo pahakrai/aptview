@@ -62,6 +62,8 @@ export default function AgentStructures() {
   const [catalog, setCatalog] = useState<ToolCatalog>({ skills: [], mcp: [] });
   const [f, setF] = useState<FormState>(empty);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [discovered, setDiscovered] = useState<Record<string, Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>>>({});
+  const [discovering, setDiscovering] = useState<string | null>(null);
 
   const allTools = [...catalog.skills, ...catalog.mcp];
   const toolEntry = (name: string) => allTools.find((t) => t.name === name);
@@ -138,6 +140,25 @@ export default function AgentStructures() {
       ...p,
       toolConfig: { ...p.toolConfig, [name]: { ...(p.toolConfig[name] ?? {}), [key]: value } },
     }));
+
+  const discover = async (name: string) => {
+    const cfg = f.toolConfig[name] ?? {};
+    setDiscovering(name);
+    try {
+      const res = await api.post('/mcp/discover', {
+        name,
+        transport: cfg.transport ?? 'sse',
+        url: cfg.url,
+        command: cfg.command,
+        args: cfg.args,
+      });
+      setDiscovered((p) => ({ ...p, [name]: res.data?.tools ?? [] }));
+    } catch {
+      setDiscovered((p) => ({ ...p, [name]: [] }));
+    } finally {
+      setDiscovering(null);
+    }
+  };
 
   const toggleSkill = (name: string) =>
     setF((p) => {
@@ -239,20 +260,26 @@ export default function AgentStructures() {
 
           {f.flow === 'orchestrator' && (
             <>
-              <label className="text-xs text-slate-500 block mt-4">Skills</label>
+              <div className="mt-4 flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-rose-500" />
+                <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Native skills (guardrails)</span>
+              </div>
               <div className="flex flex-wrap gap-2 mt-1">
                 {catalog.skills.map((s) => (
                   <button key={s.name} onClick={() => toggleSkill(s.name)}
-                    className={(f.skills.includes(s.name) ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400') + ' px-2 py-1 rounded text-xs'} title={s.description}>
+                    className={(f.skills.includes(s.name) ? 'bg-rose-600 text-white' : 'bg-slate-800 text-slate-400') + ' px-2 py-1 rounded text-xs'} title={s.description}>
                     {s.name}
                   </button>
                 ))}
               </div>
-              <label className="text-xs text-slate-500 block mt-3">MCP servers</label>
+              <div className="mt-3 flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-blue-500" />
+                <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">MCP connectors (external data)</span>
+              </div>
               <div className="flex flex-wrap gap-2 mt-1">
                 {catalog.mcp.map((m) => (
                   <button key={m.name} onClick={() => toggleMcp(m.name)}
-                    className={(f.mcp.includes(m.name) ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400') + ' px-2 py-1 rounded text-xs'} title={m.description}>
+                    className={(f.mcp.includes(m.name) ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400') + ' px-2 py-1 rounded text-xs'} title={m.description}>
                     {m.name}
                   </button>
                 ))}
@@ -281,6 +308,27 @@ export default function AgentStructures() {
                               onChange={(v) => setToolConfig(tool.name, field.key, v)}
                             />
                           ))
+                        )}
+                        {tool.kind === 'mcp' && (
+                          <div className="mt-3 border-t border-slate-800 pt-2">
+                            <button
+                              onClick={() => discover(tool.name)}
+                              disabled={discovering === tool.name}
+                              className="px-3 py-1.5 rounded-lg bg-blue-700 hover:bg-blue-600 text-white text-xs font-medium disabled:opacity-40"
+                            >
+                              {discovering === tool.name ? 'Discovering…' : 'Discover tools'}
+                            </button>
+                            {discovered[tool.name] && discovered[tool.name].length > 0 && (
+                              <div className="mt-2 space-y-1">
+                                {discovered[tool.name].map((t) => (
+                                  <div key={t.name} className="text-xs">
+                                    <span className="text-slate-300 font-mono">{t.name}</span>
+                                    <span className="text-slate-600"> — {t.description}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
                         )}
                       </div>
                     );
@@ -373,11 +421,12 @@ function ConfigField({
     );
   }
 
-  if (field.type === 'secret') {
+  if (field.type === 'secretRef') {
     return (
       <div className="mt-2">
         {label}
-        <input type="password" value={textValue} onChange={(e) => onChange(e.target.value)} className={fieldCls} placeholder={field.placeholder} />
+        <input value={textValue} onChange={(e) => onChange(e.target.value)} className={fieldCls} placeholder={field.placeholder ?? 'env:VAR_NAME'} />
+        <p className="text-[11px] text-slate-600 mt-1">Store a reference (env:VAR), not the raw secret.</p>
       </div>
     );
   }

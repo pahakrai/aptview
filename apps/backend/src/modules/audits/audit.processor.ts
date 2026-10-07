@@ -149,6 +149,7 @@ export class AuditProcessor extends WorkerHost {
       prTitle: prTitle ?? 'PR ' + prNumber,
       diffContent,
       taskDescription,
+      tenantId: organizationId,
       guidelines: activeGuidelines.map((g) => ({
         name: g.name,
         description: g.description,

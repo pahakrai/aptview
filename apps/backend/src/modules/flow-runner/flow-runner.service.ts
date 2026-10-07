@@ -21,7 +21,7 @@ import {
   type GraphContext,
   type GraphExecutors,
 } from './flow-graph';
-import { buildSkillSchema, executeSkill } from './tool-catalog';
+import { buildSkillSchema, executeSkill, listGuardSkills } from './tool-catalog';
 
 export interface FlowGuideline {
   name: string;
@@ -34,6 +34,8 @@ export interface FlowRunInput {
   prTitle: string;
   diffContent: string;
   taskDescription?: string;
+  /** Current tenant (org id) — consumed by guard skills, never the LLM. */
+  tenantId?: string;
   guidelines: FlowGuideline[];
 }
 
@@ -201,6 +203,7 @@ export class FlowRunnerService {
     let completionTokens = 0;
 
     const toolConfig = strategy.toolChain?.toolConfig ?? {};
+    const guardSkills = listGuardSkills(strategy.toolChain?.skills ?? []);
     const mcp = await this.connectMcp(strategy.toolChain?.mcp ?? [], toolConfig);
     const skillSchema = buildSkillSchema(strategy.toolChain?.skills ?? []);
     const toolSchema: Array<Record<string, unknown>> = [
@@ -214,6 +217,7 @@ export class FlowRunnerService {
       toolCallCount: 0,
       diffContent: input.diffContent,
       guidelines: input.guidelines,
+      tenantId: input.tenantId,
     };
 
     const exec: GraphExecutors = {
@@ -256,11 +260,28 @@ export class FlowRunnerService {
           guidelines: input.guidelines,
           diffContent: input.diffContent,
           toolConfig: toolConfig[name] ?? {},
+          tenantId: input.tenantId,
         });
         if (skill !== null) return skill;
+
+        // MCP path: run enabled guard skills (tenant isolation, PII, …)
+        // before the tool call reaches the external server.
+        let scopedArgs = args;
+        for (const guardSkill of guardSkills) {
+          if (!guardSkill.guard) continue;
+          const res = guardSkill.guard(args, {
+            tenantId: input.tenantId,
+            toolName: name,
+          });
+          if (res.action === 'block') {
+            return 'BLOCKED by ' + guardSkill.name + ': ' + (res.reason ?? 'policy violation');
+          }
+          if (res.action === 'rewrite' && res.args) scopedArgs = res.args;
+        }
+
         if (mcp) {
           try {
-            const r = await mcp.bridge.callTool(name, args);
+            const r = await mcp.bridge.callTool(name, scopedArgs);
             return (r.content ?? []).map((c) => c.text ?? '').join('\n');
           } catch (err) {
             return 'MCP tool error: ' + (err as Error).message;
@@ -332,8 +353,16 @@ export class FlowRunnerService {
     const env: Record<string, string> = {};
     for (const [k, v] of Object.entries(cfg)) {
       if (reserved.has(k) || v === undefined || v === null || v === '') continue;
-      env['MCP_' + k.toUpperCase()] = typeof v === 'string' ? v : JSON.stringify(v);
+      env['MCP_' + k.toUpperCase()] = this.resolveSecretRef(v);
     }
     return Object.keys(env).length > 0 ? env : undefined;
+  }
+
+  /** Resolve a secretRef (env:VAR) from process.env; pass other values through. */
+  private resolveSecretRef(v: unknown): string {
+    if (typeof v === 'string' && v.startsWith('env:')) {
+      return process.env[v.slice(4)] ?? '';
+    }
+    return typeof v === 'string' ? v : JSON.stringify(v);
   }
 }
