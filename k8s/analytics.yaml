@@ -1,0 +1,79 @@
+# ============================================================================
+# analytics.yaml — Python analytics microservice (pandas + scipy + FastAPI)
+# Computes p-values, effect sizes, and Wilson confidence intervals from the
+# Postgres reference/experiment data.
+# ============================================================================
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: analytics
+  namespace: aigov
+  labels:
+    app: analytics
+    app.kubernetes.io/part-of: aigov
+    app.kubernetes.io/component: analytics
+spec:
+  type: ClusterIP
+  selector:
+    app: analytics
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analytics
+  namespace: aigov
+  labels:
+    app: analytics
+    app.kubernetes.io/part-of: aigov
+    app.kubernetes.io/component: analytics
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: analytics
+  template:
+    metadata:
+      labels:
+        app: analytics
+        app.kubernetes.io/part-of: aigov
+        app.kubernetes.io/component: analytics
+    spec:
+      containers:
+        - name: analytics
+          image: aigov-analytics:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: aigov-secrets
+                  key: DATABASE_URL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 15

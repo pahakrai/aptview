@@ -30,6 +30,10 @@ build:
       docker:
         dockerfile: apps/frontend/Dockerfile
         target: production
+    - image: ghcr.io/your-org/aigov-analytics
+      context: services/analytics
+      docker:
+        dockerfile: Dockerfile
   local:
     useBuildkit: true
     push: true       # Push to registry
@@ -47,6 +51,7 @@ manifests:
     - k8s/backend.yaml
     - k8s/frontend.yaml
     - k8s/prometheus.yaml
+    - k8s/analytics.yaml
 
 deploy:
   kubectl: {}

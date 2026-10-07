@@ -32,6 +32,10 @@ build:
       docker:
         dockerfile: apps/frontend/Dockerfile
         target: production
+    - image: aigov-analytics
+      context: services/analytics
+      docker:
+        dockerfile: Dockerfile
   local:
     useBuildkit: true
     push: false
@@ -50,6 +54,7 @@ manifests:
     - k8s/frontend.yaml
     - k8s/nginx-sso.yaml
     - k8s/prometheus.yaml
+    - k8s/analytics.yaml
 
 deploy:
   kubectl: {}

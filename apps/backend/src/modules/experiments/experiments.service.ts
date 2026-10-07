@@ -345,6 +345,8 @@ export class ExperimentsService {
     // Capture production telemetry for the reference-based eval flow.
     await this.evalService.recordTelemetry({
       traceId: input.threadId,
+      repositoryFullName: input.repositoryFullName,
+      prNumber: input.prNumber,
       humanAction: input.action,
       humanModifiedReview: input.modifiedReview ?? input.note ?? null,
       starRating: input.starRating ?? null,

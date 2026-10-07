@@ -24,6 +24,8 @@ export class EvalService {
     traceId: string;
     experimentId?: string | null;
     variantId?: string | null;
+    repositoryFullName?: string | null;
+    prNumber?: number | null;
     organizationId?: string | null;
     codeSnippet?: string | null;
     taskDescription?: string | null;
@@ -41,6 +43,8 @@ export class EvalService {
       traceId: input.traceId,
       experimentId: input.experimentId ?? null,
       variantId: input.variantId ?? null,
+      repositoryFullName: input.repositoryFullName ?? null,
+      prNumber: input.prNumber ?? null,
       organizationId: input.organizationId ?? null,
       codeSnippet: input.codeSnippet ?? null,
       taskDescription: input.taskDescription ?? null,

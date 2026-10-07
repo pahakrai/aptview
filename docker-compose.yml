@@ -29,13 +29,31 @@ services:
 
   redis:
     image: redis:7-alpine
+    command: redis-server --appendonly yes
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # =========================================================================
+  # Analytics microservice (Python) — computes p-values, effect sizes, and
+  # Wilson confidence intervals from Postgres reference/experiment data.
+  # =========================================================================
+  analytics:
+    build:
+      context: ./services/analytics
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://aigov:aigov123@postgres:5432/aigov
+    ports:
+      - "8000:8000"
 
   # =========================================================================
   # Application Services
@@ -83,3 +101,4 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:

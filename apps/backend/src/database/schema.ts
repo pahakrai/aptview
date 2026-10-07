@@ -608,6 +608,8 @@ export const reviewTelemetry = pgTable('review_telemetry', {
     onDelete: 'set null',
   }),
   variantId: varchar('variant_id', { length: 50 }),
+  repositoryFullName: varchar('repository_full_name', { length: 512 }),
+  prNumber: integer('pr_number'),
   organizationId: uuid('organization_id').references(() => organizations.id, {
     onDelete: 'set null',
   }),
