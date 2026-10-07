@@ -13,8 +13,8 @@ async function bootstrap() {
   // Cookie parser (required for SSO session cookies)
   app.use(cookieParser());
 
-  // Global prefix
-  app.setGlobalPrefix('api/v1');
+  // Global prefix (metrics stays at /metrics for Prometheus scraping)
+  app.setGlobalPrefix('api/v1', { exclude: ['metrics'] });
 
   // Validation
   app.useGlobalPipes(

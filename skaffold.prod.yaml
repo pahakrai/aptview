@@ -46,6 +46,7 @@ manifests:
     - k8s/mcp-config.yaml
     - k8s/backend.yaml
     - k8s/frontend.yaml
+    - k8s/prometheus.yaml
 
 deploy:
   kubectl: {}

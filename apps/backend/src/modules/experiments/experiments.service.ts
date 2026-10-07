@@ -28,6 +28,7 @@ import { Queue } from 'bullmq';
 import { NotificationsService } from './notifications.service';
 import { PromotionsService } from './promotions.service';
 import { EvalService } from './eval.service';
+import { MetricsService } from '../metrics/metrics.service';
 import {
   clamp01,
   composeScore,
@@ -143,6 +144,7 @@ export class ExperimentsService {
     private readonly notifications: NotificationsService,
     private readonly promotions: PromotionsService,
     private readonly evalService: EvalService,
+    private readonly metrics: MetricsService,
   ) {}
 
   /**
@@ -289,6 +291,14 @@ export class ExperimentsService {
       revisionCount,
       acceptedAt,
     });
+
+    this.metrics.recordExperimentRun(input.variantId, input.verdict);
+    this.metrics.recordReviewCosts(
+      input.latencyMs,
+      input.promptTokens ?? 0,
+      input.completionTokens ?? 0,
+      costUsdOf(input.strategy.modelId, input.promptTokens ?? 0, input.completionTokens ?? 0),
+    );
   }
 
   /**
@@ -343,6 +353,9 @@ export class ExperimentsService {
       taskDescription: input.taskDescription ?? null,
       codeStandards: input.codeStandards ?? null,
     });
+
+    this.metrics.recordReviewDecision(input.action);
+    this.metrics.recordStarRating(input.starRating);
   }
 
   /**
@@ -872,6 +885,7 @@ export class ExperimentsService {
         .set({ status: 'completed', completedAt: new Date() })
         .where(eq(benchmarkJobs.id, benchmarkJobId));
 
+      this.metrics.recordBenchmarkRun('completed');
       await this.notifications.notify(job.organizationId, 'benchmark_completed', 'Benchmark completed', 'Experiment benchmark finished.');
     } catch (err) {
       const aborted = signal?.aborted;
@@ -885,6 +899,7 @@ export class ExperimentsService {
           .update(benchmarkJobs)
           .set({ status: 'failed', error: (err as Error).message, completedAt: new Date() })
           .where(eq(benchmarkJobs.id, benchmarkJobId));
+        this.metrics.recordBenchmarkRun('failed');
         await this.notifications.notify(job.organizationId, 'benchmark_failed', 'Benchmark failed', (err as Error).message);
       }
     } finally {
@@ -922,6 +937,7 @@ export class ExperimentsService {
         .update(benchmarkJobs)
         .set({ status: 'cancelled', completedAt: new Date() })
         .where(eq(benchmarkJobs.id, id));
+      this.metrics.recordBenchmarkRun('cancelled');
     }
     const [updated] = await db
       .select()

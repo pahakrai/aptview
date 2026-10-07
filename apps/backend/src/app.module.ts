@@ -14,6 +14,7 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { ReviewsModule } from './modules/reviews/reviews.module';
 import { LogAnalyzerModule } from './modules/log-analyzer/log-analyzer.module';
 import { SsoModule } from './modules/sso/sso.module';
+import { MetricsModule } from './modules/metrics/metrics.module';
 import { HealthController } from './modules/health.controller';
 
 @Module({
@@ -49,6 +50,7 @@ import { HealthController } from './modules/health.controller';
     ReviewsModule,
     LogAnalyzerModule,
     SsoModule,
+    MetricsModule,
   ],
   controllers: [HealthController],
 })

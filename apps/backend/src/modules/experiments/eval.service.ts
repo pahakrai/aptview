@@ -4,6 +4,7 @@ import { db } from '../../database/client';
 import { experiments, goldStandardReferences, referenceEvals, reviewTelemetry } from '../../database/schema';
 import type { AuditStrategy } from '@aigov/shared-types';
 import { FlowRunnerService, type FlowGuideline } from '../flow-runner/flow-runner.service';
+import { MetricsService } from '../metrics/metrics.service';
 import { costUsdOf } from './experiment-stats';
 import { cohensD, editSimilarity, mean, meanCI, precisionRecallF1, welchTTest } from './eval-metrics';
 
@@ -14,7 +15,10 @@ import { cohensD, editSimilarity, mean, meanCI, precisionRecallF1, welchTTest } 
  */
 @Injectable()
 export class EvalService {
-  constructor(private readonly flowRunner: FlowRunnerService) {}
+  constructor(
+    private readonly flowRunner: FlowRunnerService,
+    private readonly metrics: MetricsService,
+  ) {}
 
   async recordTelemetry(input: {
     traceId: string;
@@ -57,6 +61,7 @@ export class EvalService {
         starRating: input.starRating ?? null,
       },
     });
+    this.metrics.recordTelemetry(input.humanAction);
     return { traceId: input.traceId };
   }
 
@@ -119,6 +124,13 @@ export class EvalService {
         const summary = outcome.summary ?? '';
         const f1 = precisionRecallF1(ref.referenceReview, summary);
         const sim = editSimilarity(ref.referenceReview, summary);
+        this.metrics.recordReferenceEvalF1(v.variantId, f1.f1);
+        this.metrics.recordReviewCosts(
+          outcome.latencyMs,
+          outcome.promptTokens,
+          outcome.completionTokens,
+          costUsdOf(v.strategy.modelId, outcome.promptTokens, outcome.completionTokens),
+        );
         await db.insert(referenceEvals).values({
           experimentId,
           referenceId: ref.id,

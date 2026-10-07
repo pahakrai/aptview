@@ -128,10 +128,6 @@ function logGamma(x: number): number {
   return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(a);
 }
 
-function beta(a: number, b: number): number {
-  return Math.exp(logGamma(a) + logGamma(b) - logGamma(a + b));
-}
-
 function betacf(a: number, b: number, x: number): number {
   const MAXIT = 200;
   const EPS = 3e-14;

@@ -3,6 +3,7 @@ import { and, desc, eq, isNull } from 'drizzle-orm';
 import { db } from '../../database/client';
 import { activeFlowRuns, activeFlows, experiments } from '../../database/schema';
 import type { AuditVerdict, ReviewDecisionAction } from '@aigov/shared-types';
+import { MetricsService } from '../metrics/metrics.service';
 
 /**
  * PromotionsService — the "plugin": active flows (promotion, resolution,
@@ -10,6 +11,7 @@ import type { AuditVerdict, ReviewDecisionAction } from '@aigov/shared-types';
  */
 @Injectable()
 export class PromotionsService {
+  constructor(private readonly metrics: MetricsService) {}
   async promote(
     experimentId: string,
     input: {
@@ -55,6 +57,7 @@ export class PromotionsService {
       .limit(1);
 
     const version = (current?.version ?? 0) + 1;
+    this.metrics.recordPromotion(input.scope);
     const [row] = await db
       .insert(activeFlows)
       .values({

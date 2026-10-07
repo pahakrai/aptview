@@ -49,6 +49,7 @@ manifests:
     - k8s/backend.yaml
     - k8s/frontend.yaml
     - k8s/nginx-sso.yaml
+    - k8s/prometheus.yaml
 
 deploy:
   kubectl: {}
