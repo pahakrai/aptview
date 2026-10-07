@@ -639,6 +639,16 @@ export class ExperimentsService {
     // significance machinery exists to prevent.
     const winner = selectWinner(arms);
 
+    for (const arm of arms) {
+      this.metrics.recordAcceptanceArm(
+        id,
+        arm.variantId,
+        arm.acceptanceRate,
+        arm.acceptanceCI ? arm.acceptanceCI[0] : null,
+        arm.acceptanceCI ? arm.acceptanceCI[1] : null,
+      );
+    }
+
     return {
       experiment: exp,
       metricsWeights: exp.metricsWeights,

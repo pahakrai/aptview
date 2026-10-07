@@ -1,0 +1,144 @@
+# ============================================================================
+# grafana.yaml — Grafana with a provisioned Prometheus datasource and an
+# AIGov A/B + review dashboard.
+#
+# Port-forward to view: kubectl port-forward -n aigov svc/grafana 3000:3000
+# ============================================================================
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: aigov
+  labels:
+    app.kubernetes.io/part-of: aigov
+data:
+  datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus.aigov.svc.cluster.local:9090
+        isDefault: true
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: aigov
+  labels:
+    app.kubernetes.io/part-of: aigov
+data:
+  dashboard-provider.yaml: |
+    apiVersion: 1
+    providers:
+      - name: aigov
+        orgId: 1
+        folder: AIGov
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 10
+        options:
+          path: /var/lib/grafana/dashboards
+  aigov-overview.json: |
+    {
+      "uid": "aigov",
+      "title": "AIGov - A/B and Review",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "30s",
+      "panels": [
+        { "id": 1, "type": "stat", "title": "Reviews (5m)", "gridPos": { "h": 5, "w": 8, "x": 0, "y": 0 }, "targets": [ { "expr": "sum(increase(aigov_review_decisions_total[5m])) by (action)", "legendFormat": "action" } ] },
+        { "id": 2, "type": "stat", "title": "Avg star rating", "gridPos": { "h": 5, "w": 8, "x": 8, "y": 0 }, "targets": [ { "expr": "sum(aigov_review_star_rating_sum) / sum(aigov_review_star_rating_count)" } ] },
+        { "id": 3, "type": "stat", "title": "Review latency p95", "unit": "s", "gridPos": { "h": 5, "w": 8, "x": 16, "y": 0 }, "targets": [ { "expr": "histogram_quantile(0.95, sum(rate(aigov_review_latency_seconds_bucket[5m])) by (le))" } ] },
+        { "id": 4, "type": "timeseries", "title": "Arm F1 vs reference", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 }, "targets": [ { "expr": "aigov_experiment_arm_f1", "legendFormat": "variant" } ] },
+        { "id": 5, "type": "timeseries", "title": "Acceptance rate + Wilson CI", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 }, "targets": [ { "expr": "aigov_experiment_arm_acceptance_rate", "legendFormat": "rate" }, { "expr": "aigov_experiment_arm_acceptance_wilson_lower", "legendFormat": "lower" }, { "expr": "aigov_experiment_arm_acceptance_wilson_upper", "legendFormat": "upper" } ] },
+        { "id": 6, "type": "timeseries", "title": "F1 p-value + Cohens d vs control", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 }, "targets": [ { "expr": "aigov_experiment_arm_f1_welch_p", "legendFormat": "p" }, { "expr": "aigov_experiment_arm_f1_cohens_d", "legendFormat": "d" } ] }
+      ]
+    }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: aigov
+  labels:
+    app: grafana
+    app.kubernetes.io/part-of: aigov
+    app.kubernetes.io/component: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+        app.kubernetes.io/part-of: aigov
+        app.kubernetes.io/component: monitoring
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:10.4.3
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "true"
+            - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+              value: Admin
+          volumeMounts:
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboards
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboard-json
+              mountPath: /var/lib/grafana/dashboards
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+            items:
+              - key: dashboard-provider.yaml
+                path: dashboard-provider.yaml
+        - name: dashboard-json
+          configMap:
+            name: grafana-dashboards
+            items:
+              - key: aigov-overview.json
+                path: aigov-overview.json
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: aigov
+  labels:
+    app: grafana
+    app.kubernetes.io/part-of: aigov
+    app.kubernetes.io/component: monitoring
+spec:
+  type: ClusterIP
+  selector:
+    app: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000

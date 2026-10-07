@@ -214,6 +214,16 @@ export class EvalService {
         },
       };
     });
+    for (const arm of scored) {
+      this.metrics.recordEvalArm(
+        experimentId,
+        arm.variantId,
+        arm.meanF1,
+        arm.vsControl?.f1P ?? null,
+        arm.vsControl?.f1CohenD ?? null,
+      );
+    }
+
     return {
       experiment: exp,
       arms: scored,

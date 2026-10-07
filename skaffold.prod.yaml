@@ -51,6 +51,7 @@ manifests:
     - k8s/backend.yaml
     - k8s/frontend.yaml
     - k8s/prometheus.yaml
+    - k8s/grafana.yaml
     - k8s/analytics.yaml
 
 deploy:

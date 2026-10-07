@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Counter, Histogram, Registry, collectDefaultMetrics } from 'prom-client';
+import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom-client';
 
 /**
  * MetricsService - exposes Prometheus metrics for the review / A/B / eval
@@ -20,6 +20,12 @@ export class MetricsService {
   readonly referenceEvalF1: Histogram<string>;
   readonly flowPromotionsTotal: Counter<string>;
   readonly telemetryTotal: Counter<string>;
+  readonly experimentArmF1: Gauge<string>;
+  readonly experimentArmF1WelchP: Gauge<string>;
+  readonly experimentArmF1CohenD: Gauge<string>;
+  readonly experimentArmAcceptanceRate: Gauge<string>;
+  readonly experimentArmAcceptanceWilsonLower: Gauge<string>;
+  readonly experimentArmAcceptanceWilsonUpper: Gauge<string>;
 
   constructor() {
     collectDefaultMetrics({ register: this.registry, prefix: 'aigov_' });
@@ -85,6 +91,42 @@ export class MetricsService {
       labelNames: ['action'],
       registers: [this.registry],
     });
+    this.experimentArmF1 = new Gauge({
+      name: 'aigov_experiment_arm_f1',
+      help: 'Mean F1 vs reference (last computed)',
+      labelNames: ['experiment_id', 'variant_id'],
+      registers: [this.registry],
+    });
+    this.experimentArmF1WelchP = new Gauge({
+      name: 'aigov_experiment_arm_f1_welch_p',
+      help: 'Welch t-test p-value of F1 vs control',
+      labelNames: ['experiment_id', 'variant_id'],
+      registers: [this.registry],
+    });
+    this.experimentArmF1CohenD = new Gauge({
+      name: 'aigov_experiment_arm_f1_cohens_d',
+      help: 'Cohen d of F1 vs control',
+      labelNames: ['experiment_id', 'variant_id'],
+      registers: [this.registry],
+    });
+    this.experimentArmAcceptanceRate = new Gauge({
+      name: 'aigov_experiment_arm_acceptance_rate',
+      help: 'Human acceptance rate (0..1)',
+      labelNames: ['experiment_id', 'variant_id'],
+      registers: [this.registry],
+    });
+    this.experimentArmAcceptanceWilsonLower = new Gauge({
+      name: 'aigov_experiment_arm_acceptance_wilson_lower',
+      help: 'Wilson 95% CI lower bound for acceptance',
+      labelNames: ['experiment_id', 'variant_id'],
+      registers: [this.registry],
+    });
+    this.experimentArmAcceptanceWilsonUpper = new Gauge({
+      name: 'aigov_experiment_arm_acceptance_wilson_upper',
+      help: 'Wilson 95% CI upper bound for acceptance',
+      labelNames: ['experiment_id', 'variant_id'],
+      registers: [this.registry],
+    });
   }
 
   get contentType(): string {
@@ -132,5 +174,31 @@ export class MetricsService {
 
   recordTelemetry(action: string | null | undefined): void {
     this.telemetryTotal.inc({ action: action ?? 'none' });
+  }
+
+  recordEvalArm(
+    experimentId: string,
+    variantId: string,
+    meanF1: number | null,
+    welchP: number | null,
+    cohenD: number | null,
+  ): void {
+    const labels = { experiment_id: experimentId, variant_id: variantId };
+    if (meanF1 !== null) this.experimentArmF1.set(labels, meanF1);
+    if (welchP !== null) this.experimentArmF1WelchP.set(labels, welchP);
+    if (cohenD !== null && !Number.isNaN(cohenD)) this.experimentArmF1CohenD.set(labels, cohenD);
+  }
+
+  recordAcceptanceArm(
+    experimentId: string,
+    variantId: string,
+    rate: number | null,
+    wilsonLower: number | null,
+    wilsonUpper: number | null,
+  ): void {
+    const labels = { experiment_id: experimentId, variant_id: variantId };
+    if (rate !== null) this.experimentArmAcceptanceRate.set(labels, rate);
+    if (wilsonLower !== null) this.experimentArmAcceptanceWilsonLower.set(labels, wilsonLower);
+    if (wilsonUpper !== null) this.experimentArmAcceptanceWilsonUpper.set(labels, wilsonUpper);
   }
 }

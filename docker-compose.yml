@@ -99,6 +99,31 @@ services:
       - /app/apps/frontend/node_modules
     working_dir: /app/apps/frontend
 
+  # =========================================================================
+  # Observability — Prometheus + Grafana
+  # =========================================================================
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    depends_on:
+      - backend
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./tools/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:10.4.3
+    depends_on:
+      - prometheus
+    ports:
+      - "3001:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    volumes:
+      - ./tools/grafana/provisioning:/etc/grafana/provisioning
+      - ./tools/grafana/dashboards:/var/lib/grafana/dashboards
+
 volumes:
   postgres_data:
   redis_data:

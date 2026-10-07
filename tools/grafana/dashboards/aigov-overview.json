@@ -1,0 +1,73 @@
+{
+  "uid": "aigov",
+  "title": "AIGov - A/B and Review",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Reviews (5m)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum(increase(aigov_review_decisions_total[5m])) by (action)", "legendFormat": "{{action}}" }
+      ],
+      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 0 }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Avg star rating",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum(aigov_review_star_rating_sum) / sum(aigov_review_star_rating_count)" }
+      ],
+      "gridPos": { "h": 5, "w": 8, "x": 8, "y": 0 }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Review latency p95",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(aigov_review_latency_seconds_bucket[5m])) by (le))" }
+      ],
+      "unit": "s",
+      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 0 }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Arm F1 vs reference",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "aigov_experiment_arm_f1", "legendFormat": "{{experiment_id}}/{{variant_id}}" }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Acceptance rate + Wilson CI",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "aigov_experiment_arm_acceptance_rate", "legendFormat": "{{variant_id}} rate" },
+        { "expr": "aigov_experiment_arm_acceptance_wilson_lower", "legendFormat": "{{variant_id}} lower" },
+        { "expr": "aigov_experiment_arm_acceptance_wilson_upper", "legendFormat": "{{variant_id}} upper" }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "F1 p-value + Cohen's d vs control",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "aigov_experiment_arm_f1_welch_p", "legendFormat": "{{variant_id}} p" },
+        { "expr": "aigov_experiment_arm_f1_cohens_d", "legendFormat": "{{variant_id}} d" }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 }
+    }
+  ]
+}
