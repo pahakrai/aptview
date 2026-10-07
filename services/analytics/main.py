@@ -1,11 +1,11 @@
 """
 aigov analytics microservice.
 
-Reads the A/B experiment + reference-eval data from Postgres and computes, per
-variant: mean F1 / latency / cost with 95% t-intervals, acceptance rate with a
-Wilson score interval, and (vs control) a Welch t-test p-value and Cohen's d.
-
-Uses pandas for tabular loading and scipy for the t-distribution statistics.
+Reads A/B experiment + reference-eval data from Postgres, computes per-variant
+statistics (F1/latency/cost means + 95% t-intervals, acceptance rate + Wilson
+CI, Welch t-test, Cohen's d, and a two-proportion z-test for acceptance), then
+persists the summary metrics back to the eval_summaries table for the Node.js
+frontend to serve.
 """
 
 import math
@@ -29,7 +29,6 @@ def _engine():
 
 
 def wilson_ci(successes, trials, z=1.96):
-    """Wilson score interval for a binomial proportion."""
     if trials <= 0:
         return {"center": None, "lower": None, "upper": None}
     p = successes / trials
@@ -44,7 +43,6 @@ def wilson_ci(successes, trials, z=1.96):
 
 
 def cohens_d(a, b):
-    """Pooled standard-deviation effect size (mean_b - mean_a) / pooled_sd."""
     na, nb = len(a), len(b)
     if na < 2 or nb < 2:
         return None
@@ -57,7 +55,6 @@ def cohens_d(a, b):
 
 
 def mean_ci(values, conf=0.95):
-    """Mean with a t-distribution 95% confidence interval."""
     n = len(values)
     if n == 0:
         return {"mean": None, "lower": None, "upper": None}
@@ -69,11 +66,25 @@ def mean_ci(values, conf=0.95):
 
 
 def welch_p(a, b):
-    """Two-sided Welch t-test p-value for b vs a."""
     if len(a) < 2 or len(b) < 2:
         return None
     _t, p = stats.ttest_ind(b, a, equal_var=False)
     return float(p)
+
+
+def proportion_z_test(sa, na, sb, nb):
+    """Two-proportion z-test (acceptance rate): b vs a."""
+    if na <= 0 or nb <= 0:
+        return {"z": None, "p": None}
+    pa = sa / na
+    pb = sb / nb
+    pooled = (sa + sb) / (na + nb)
+    se = math.sqrt(pooled * (1 - pooled) * (1 / na + 1 / nb))
+    if se == 0:
+        return {"z": 0.0, "p": 1.0}
+    z = (pb - pa) / se
+    p = 2 * (1 - stats.norm.cdf(abs(z)))
+    return {"z": float(z), "p": float(p)}
 
 
 @app.get("/health")
@@ -116,15 +127,20 @@ def analyze(experiment_id: str):
     control_f1 = arr(evals, control, "f1")
     control_latency = arr(evals, control, "latency_ms")
 
+    def acceptance_of(df, variant):
+        acc = df[df["variant_id"] == variant]["human_accepted"]
+        decided = int(acc.notna().sum())
+        accepted = int(acc.eq(True).sum())
+        return decided, accepted
+
+    control_decided, control_accepted = acceptance_of(runs, control)
+
     arms = []
     for v in variants:
         f1 = arr(evals, v, "f1")
         latency = arr(evals, v, "latency_ms")
         cost = arr(evals, v, "cost_usd")
-
-        acc = runs[runs["variant_id"] == v]["human_accepted"]
-        decided = int(acc.notna().sum())
-        accepted = int(acc.eq(True).sum())
+        decided, accepted = acceptance_of(runs, v)
         rate = accepted / decided if decided else None
 
         arm = {
@@ -142,6 +158,7 @@ def analyze(experiment_id: str):
         }
 
         if v != control:
+            zt = proportion_z_test(control_accepted, control_decided, accepted, decided)
             arm["vs_control"] = {
                 "f1_delta": round(float(np.mean(f1)) - float(np.mean(control_f1)), 6)
                 if len(f1) and len(control_f1)
@@ -149,8 +166,42 @@ def analyze(experiment_id: str):
                 "f1_welch_p": welch_p(control_f1, f1),
                 "f1_cohens_d": cohens_d(control_f1, f1),
                 "latency_cohens_d": cohens_d(control_latency, latency),
+                "acceptance_z": zt["z"],
+                "acceptance_z_p": zt["p"],
             }
 
         arms.append(arm)
+
+    upsert = text(
+        "INSERT INTO eval_summaries (experiment_id, variant_id, metric, value) "
+        "VALUES (:eid, :vid, :metric, :value) "
+        "ON CONFLICT (experiment_id, variant_id, metric) "
+        "DO UPDATE SET value = EXCLUDED.value, created_at = now()"
+    )
+
+    def put(conn, vid, metric, value):
+        if value is None:
+            return
+        conn.execute(
+            upsert,
+            {"eid": experiment_id, "vid": vid, "metric": metric, "value": float(value)},
+        )
+
+    with eng.begin() as conn:
+        for arm in arms:
+            vid = arm["variant_id"]
+            put(conn, vid, "f1_mean", arm["f1"]["mean"])
+            put(conn, vid, "f1_lower", arm["f1"]["lower"])
+            put(conn, vid, "f1_upper", arm["f1"]["upper"])
+            put(conn, vid, "latency_mean", arm["latency_ms"]["mean"])
+            put(conn, vid, "cost_mean", arm["cost_usd"]["mean"])
+            put(conn, vid, "acceptance_rate", arm["acceptance"]["rate"])
+            put(conn, vid, "wilson_lower", arm["acceptance"]["wilson_ci"]["lower"])
+            put(conn, vid, "wilson_upper", arm["acceptance"]["wilson_ci"]["upper"])
+            if "vs_control" in arm:
+                put(conn, vid, "f1_welch_p", arm["vs_control"]["f1_welch_p"])
+                put(conn, vid, "f1_cohens_d", arm["vs_control"]["f1_cohens_d"])
+                put(conn, vid, "latency_cohens_d", arm["vs_control"]["latency_cohens_d"])
+                put(conn, vid, "acceptance_z_p", arm["vs_control"]["acceptance_z_p"])
 
     return {"experiment_id": experiment_id, "arms": arms}

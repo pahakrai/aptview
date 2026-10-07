@@ -167,6 +167,11 @@ export class ExperimentsController {
     return this.evalService.getEvalReport(id);
   }
 
+  @Get(':id/stats')
+  async stats(@Param('id') id: string) {
+    return this.evalService.getStats(id);
+  }
+
   @Post('telemetry')
   @UseGuards(AuthGuard('api-key'))
   async recordTelemetry(@Body() body: Record<string, unknown>) {

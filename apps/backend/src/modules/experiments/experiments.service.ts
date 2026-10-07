@@ -29,6 +29,7 @@ import { NotificationsService } from './notifications.service';
 import { PromotionsService } from './promotions.service';
 import { EvalService } from './eval.service';
 import { MetricsService } from '../metrics/metrics.service';
+import { logEvent } from '../../common/structured-log';
 import {
   clamp01,
   composeScore,
@@ -101,6 +102,7 @@ export interface ReviewDecisionInput {
   codeSnippet?: string | null;
   taskDescription?: string | null;
   codeStandards?: Record<string, unknown> | null;
+  contextRetrieved?: Record<string, unknown> | null;
 }
 
 type ExperimentRunRow = typeof experimentRuns.$inferSelect;
@@ -354,10 +356,20 @@ export class ExperimentsService {
       codeSnippet: input.codeSnippet ?? null,
       taskDescription: input.taskDescription ?? null,
       codeStandards: input.codeStandards ?? null,
+      contextRetrieved: input.contextRetrieved ?? null,
     });
 
     this.metrics.recordReviewDecision(input.action);
     this.metrics.recordStarRating(input.starRating);
+
+    logEvent('review_decision', {
+      trace_id: input.threadId,
+      action: input.action,
+      star_rating: input.starRating ?? null,
+      repository_full_name: input.repositoryFullName,
+      pr_number: input.prNumber,
+      human_modified_review: input.modifiedReview ?? input.note ?? null,
+    });
   }
 
   /**
@@ -898,6 +910,7 @@ export class ExperimentsService {
         .where(eq(benchmarkJobs.id, benchmarkJobId));
 
       this.metrics.recordBenchmarkRun('completed');
+      logEvent('benchmark_run', { benchmark_job_id: benchmarkJobId, experiment_id: job.experimentId, status: 'completed' });
       await this.notifications.notify(job.organizationId, 'benchmark_completed', 'Benchmark completed', 'Experiment benchmark finished.');
     } catch (err) {
       const aborted = signal?.aborted;
@@ -912,6 +925,7 @@ export class ExperimentsService {
           .set({ status: 'failed', error: (err as Error).message, completedAt: new Date() })
           .where(eq(benchmarkJobs.id, benchmarkJobId));
         this.metrics.recordBenchmarkRun('failed');
+        logEvent('benchmark_run', { benchmark_job_id: benchmarkJobId, experiment_id: job.experimentId, status: 'failed' });
         await this.notifications.notify(job.organizationId, 'benchmark_failed', 'Benchmark failed', (err as Error).message);
       }
     } finally {

@@ -32,6 +32,7 @@ export interface PendingReview {
   diffContent?: string;
   taskDescription?: string;
   guidelines?: string;
+  contextRetrieved?: Record<string, unknown>;
   status: 'awaiting_approval' | 'posting' | 'done' | 'cancelled';
   revisionCount: number;
   createdAt: string;
@@ -195,6 +196,7 @@ export class ReviewsService {
       aiReviewOutput: review.reviewText,
       modifiedReview: feedback,
       codeSnippet: review.diffContent ?? null,
+      contextRetrieved: review.contextRetrieved ?? null,
       taskDescription: review.taskDescription ?? null,
       codeStandards: review.guidelines ? { guidelines: review.guidelines } : null,
     });
@@ -235,6 +237,7 @@ export class ReviewsService {
       aiReviewOutput: review.reviewText,
       modifiedReview: notes ?? null,
       codeSnippet: review.diffContent ?? null,
+      contextRetrieved: review.contextRetrieved ?? null,
       taskDescription: review.taskDescription ?? null,
       codeStandards: review.guidelines ? { guidelines: review.guidelines } : null,
     });
@@ -274,6 +277,7 @@ export class ReviewsService {
       starRating: starRating ?? null,
       aiReviewOutput: review.reviewText,
       codeSnippet: review.diffContent ?? null,
+      contextRetrieved: review.contextRetrieved ?? null,
       taskDescription: review.taskDescription ?? null,
       codeStandards: review.guidelines ? { guidelines: review.guidelines } : null,
     });

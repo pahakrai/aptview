@@ -117,6 +117,7 @@ export class ReviewProcessor extends WorkerHost {
       diffContent: data.diffContent,
       taskDescription: data.taskDescription,
       guidelines: data.guidelines,
+      contextRetrieved: { changedFiles: data.changedFiles, repoContext: data.repoContext },
       status: 'awaiting_approval',
     });
 
@@ -165,6 +166,7 @@ export class ReviewProcessor extends WorkerHost {
       diffContent: currentState.diffContent,
       taskDescription: currentState.taskDescription,
       guidelines: currentState.guidelines,
+      contextRetrieved: { changedFiles: currentState.changedFiles, repoContext: currentState.repoContext },
       status: 'awaiting_approval',
     });
 

@@ -1,7 +1,13 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { and, eq, gte } from 'drizzle-orm';
 import { db } from '../../database/client';
-import { experiments, goldStandardReferences, referenceEvals, reviewTelemetry } from '../../database/schema';
+import {
+  evalSummaries,
+  experiments,
+  goldStandardReferences,
+  referenceEvals,
+  reviewTelemetry,
+} from '../../database/schema';
 import type { AuditStrategy } from '@aigov/shared-types';
 import { FlowRunnerService, type FlowGuideline } from '../flow-runner/flow-runner.service';
 import { MetricsService } from '../metrics/metrics.service';
@@ -30,6 +36,7 @@ export class EvalService {
     codeSnippet?: string | null;
     taskDescription?: string | null;
     codeStandards?: Record<string, unknown> | null;
+    contextRetrieved?: Record<string, unknown> | null;
     aiReviewOutput?: string | null;
     humanAction?: 'approve' | 'revise' | 'cancel' | null;
     humanModifiedReview?: string | null;
@@ -48,6 +55,7 @@ export class EvalService {
       organizationId: input.organizationId ?? null,
       codeSnippet: input.codeSnippet ?? null,
       taskDescription: input.taskDescription ?? null,
+      contextRetrieved: input.contextRetrieved ?? null,
       codeStandards: input.codeStandards ?? null,
       aiReviewOutput: input.aiReviewOutput ?? null,
       humanAction: input.humanAction ?? null,
@@ -229,5 +237,13 @@ export class EvalService {
       arms: scored,
       caveat: 'References derive from human acceptance/modification, not an objective oracle.',
     };
+  }
+
+  /** Read the statistical summaries written back by the Python microservice. */
+  async getStats(experimentId: string) {
+    return db
+      .select()
+      .from(evalSummaries)
+      .where(eq(evalSummaries.experimentId, experimentId));
   }
 }

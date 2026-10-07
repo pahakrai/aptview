@@ -616,6 +616,7 @@ export const reviewTelemetry = pgTable('review_telemetry', {
   codeSnippet: text('code_snippet'),
   taskDescription: text('task_description'),
   codeStandards: jsonb('code_standards').$type<Record<string, unknown>>(),
+  contextRetrieved: jsonb('context_retrieved').$type<Record<string, unknown>>(),
   aiReviewOutput: text('ai_review_output'),
   humanAction: reviewDecisionActionEnum('human_action'),
   humanModifiedReview: text('human_modified_review'),
@@ -677,4 +678,26 @@ export const referenceEvals = pgTable('reference_evals', {
   ),
   referenceEvalsRefIdx: index('reference_evals_ref_idx').on(table.referenceId),
   referenceEvalsVariantIdx: index('reference_evals_variant_idx').on(table.variantId),
+}));
+
+/**
+ * eval_summaries — the computed statistical results (p-values, effect sizes,
+ * confidence intervals) written back by the Python analytics microservice so
+ * the Node.js frontend can serve them without recomputing.
+ */
+export const evalSummaries = pgTable('eval_summaries', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  experimentId: uuid('experiment_id')
+    .notNull()
+    .references(() => experiments.id, { onDelete: 'cascade' }),
+  variantId: varchar('variant_id', { length: 50 }).notNull(),
+  metric: varchar('metric', { length: 100 }).notNull(),
+  value: real('value'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  evalSummariesUniq: uniqueIndex('eval_summaries_uniq').on(
+    table.experimentId,
+    table.variantId,
+    table.metric,
+  ),
 }));
