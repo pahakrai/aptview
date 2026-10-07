@@ -8,6 +8,7 @@ import { and, desc, eq, isNull, or } from 'drizzle-orm';
 import { db } from '../../database/client';
 import {
   adminRankings,
+  agentStructures,
   benchmarkJobs,
   codeGuidelines,
   experimentRuns,
@@ -705,6 +706,39 @@ export class ExperimentsService {
       })
       .returning();
     return exp;
+  }
+
+  /** Create an A/B experiment by selecting two saved agent structures. */
+  async createFromStructures(input: {
+    name: string;
+    organizationId?: string | null;
+    controlStructureId: string;
+    treatmentStructureId: string;
+    rolloutPercent?: number;
+    minSampleSize?: number;
+    metricsWeights?: MetricsWeights;
+  }) {
+    const control = await this.getStructureStrategy(input.controlStructureId);
+    const treatment = await this.getStructureStrategy(input.treatmentStructureId);
+    return this.create({
+      name: input.name,
+      organizationId: input.organizationId,
+      rolloutPercent: input.rolloutPercent,
+      minSampleSize: input.minSampleSize,
+      controlStrategy: control,
+      treatmentStrategies: [treatment],
+      metricsWeights: input.metricsWeights,
+    });
+  }
+
+  private async getStructureStrategy(id: string): Promise<AuditStrategy> {
+    const [s] = await db
+      .select()
+      .from(agentStructures)
+      .where(eq(agentStructures.id, id))
+      .limit(1);
+    if (!s) throw new NotFoundException('Agent structure ' + id + ' not found');
+    return s.strategy;
   }
 
   async updateStatus(

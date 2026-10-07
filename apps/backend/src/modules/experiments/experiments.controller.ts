@@ -92,6 +92,23 @@ export class ExperimentsController {
     return this.experimentsService.create(body);
   }
 
+  @Post('from-structures')
+  @UseGuards(AuthGuard('api-key'))
+  async createFromStructures(
+    @Body()
+    body: {
+      name: string;
+      organizationId?: string | null;
+      controlStructureId: string;
+      treatmentStructureId: string;
+      rolloutPercent?: number;
+      minSampleSize?: number;
+      metricsWeights?: MetricsWeights;
+    },
+  ) {
+    return this.experimentsService.createFromStructures(body);
+  }
+
   @Patch(':id')
   @UseGuards(AuthGuard('api-key'))
   async updateStatus(

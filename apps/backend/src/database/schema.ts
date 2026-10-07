@@ -378,6 +378,27 @@ export const experiments = pgTable('experiments', {
 });
 
 /**
+ * agent_structures — a reusable, named agent architecture design. The design
+ * (flow graph + model + tool chain) is stored as a full AuditStrategy so the
+ * design page can create/edit many of them and A/B experiments can reference
+ * two of them by id.
+ */
+export const agentStructures = pgTable('agent_structures', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  organizationId: uuid('organization_id').references(() => organizations.id, {
+    onDelete: 'set null',
+  }),
+  name: varchar('name', { length: 255 }).notNull(),
+  description: text('description'),
+  strategy: jsonb('strategy').$type<AuditStrategy>().notNull(),
+  isActive: boolean('is_active').default(true).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  agentStructuresOrgIdx: index('agent_structures_org_idx').on(table.organizationId),
+}));
+
+/**
  * experiment_runs — one observation per audited PR that hit a variant bucket.
  * Denormalized `vendor` + `modelId` columns power the hierarchical report.
  */
