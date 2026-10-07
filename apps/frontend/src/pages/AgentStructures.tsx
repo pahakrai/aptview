@@ -1,7 +1,15 @@
 import { useState, useEffect } from 'react';
 import { Plus, Trash2, Layers, FlaskConical, CheckCircle2 } from 'lucide-react';
 import api from '../lib/api';
-import type { AuditStrategy, FlowType, ModelVendor, AuditEngine, PromptVariant } from '@aigov/shared-types';
+import type {
+  AuditStrategy,
+  FlowType,
+  ModelVendor,
+  AuditEngine,
+  PromptVariant,
+  ToolCatalogEntry,
+  ToolConfigField,
+} from '@aigov/shared-types';
 
 interface Structure {
   id: string;
@@ -12,20 +20,62 @@ interface Structure {
 }
 
 interface ToolCatalog {
-  skills: { name: string; description: string }[];
+  skills: ToolCatalogEntry[];
+  mcp: ToolCatalogEntry[];
+}
+
+interface FormState {
+  name: string;
+  description: string;
+  flow: FlowType;
+  engine: AuditEngine;
+  vendor: ModelVendor;
+  modelId: string;
+  temperature: number;
+  maxTokens: number;
+  promptVariant: PromptVariant;
+  skills: string[];
   mcp: string[];
+  toolConfig: Record<string, Record<string, unknown>>;
 }
 
 const inputCls =
   'mt-1 w-full rounded-lg bg-surface-950 border border-slate-800 px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500';
 
-const empty = { name: '', description: '', flow: 'sequential' as FlowType, engine: 'deepseek' as AuditEngine, vendor: 'deepseek' as ModelVendor, modelId: 'deepseek-v4-pro', temperature: 0.2, maxTokens: 4000, promptVariant: 'baseline' as PromptVariant, skills: [] as string[], mcp: [] as string[] };
+const empty: FormState = {
+  name: '',
+  description: '',
+  flow: 'sequential',
+  engine: 'deepseek',
+  vendor: 'deepseek',
+  modelId: 'deepseek-v4-pro',
+  temperature: 0.2,
+  maxTokens: 4000,
+  promptVariant: 'baseline',
+  skills: [],
+  mcp: [],
+  toolConfig: {},
+};
 
 export default function AgentStructures() {
   const [structures, setStructures] = useState<Structure[]>([]);
   const [catalog, setCatalog] = useState<ToolCatalog>({ skills: [], mcp: [] });
-  const [f, setF] = useState(empty);
+  const [f, setF] = useState<FormState>(empty);
   const [editingId, setEditingId] = useState<string | null>(null);
+
+  const allTools = [...catalog.skills, ...catalog.mcp];
+  const toolEntry = (name: string) => allTools.find((t) => t.name === name);
+
+  const defaultsFor = (name: string): Record<string, unknown> => {
+    const t = toolEntry(name);
+    const out: Record<string, unknown> = {};
+    if (t) {
+      for (const field of t.configSchema.fields) {
+        if (field.default !== undefined) out[field.key] = field.default;
+      }
+    }
+    return out;
+  };
 
   const load = () => api.get<Structure[]>('/agent-structures').then((r) => setStructures(r.data)).catch(() => {});
   const loadCatalog = () => api.get<ToolCatalog>('/tool-catalog').then((r) => setCatalog(r.data)).catch(() => {});
@@ -40,7 +90,15 @@ export default function AgentStructures() {
     maxTokens: f.maxTokens,
     promptVariant: f.promptVariant,
     flow: f.flow,
-    ...(f.flow === 'orchestrator' ? { toolChain: { skills: f.skills, mcp: f.mcp } } : {}),
+    ...(f.flow === 'orchestrator'
+      ? {
+          toolChain: {
+            skills: f.skills,
+            mcp: f.mcp,
+            ...(Object.keys(f.toolConfig).length > 0 ? { toolConfig: f.toolConfig } : {}),
+          },
+        }
+      : {}),
   });
 
   const submit = async () => {
@@ -68,16 +126,40 @@ export default function AgentStructures() {
       promptVariant: s.strategy.promptVariant,
       skills: s.strategy.toolChain?.skills ?? [],
       mcp: s.strategy.toolChain?.mcp ?? [],
+      toolConfig: s.strategy.toolChain?.toolConfig ?? {},
     });
   };
 
   const toggle = (s: Structure) => api.patch('/agent-structures/' + s.id, { isActive: !s.isActive }).then(load);
   const remove = (id: string) => api.delete('/agent-structures/' + id).then(load);
 
+  const setToolConfig = (name: string, key: string, value: unknown) =>
+    setF((p) => ({
+      ...p,
+      toolConfig: { ...p.toolConfig, [name]: { ...(p.toolConfig[name] ?? {}), [key]: value } },
+    }));
+
   const toggleSkill = (name: string) =>
-    setF((p) => ({ ...p, skills: p.skills.includes(name) ? p.skills.filter((x) => x !== name) : [...p.skills, name] }));
+    setF((p) => {
+      const on = p.skills.includes(name);
+      const skills = on ? p.skills.filter((x) => x !== name) : [...p.skills, name];
+      const toolConfig = { ...p.toolConfig };
+      if (on) delete toolConfig[name];
+      else if (!toolConfig[name]) toolConfig[name] = defaultsFor(name);
+      return { ...p, skills, toolConfig };
+    });
+
   const toggleMcp = (name: string) =>
-    setF((p) => ({ ...p, mcp: p.mcp.includes(name) ? p.mcp.filter((x) => x !== name) : [...p.mcp, name] }));
+    setF((p) => {
+      const on = p.mcp.includes(name);
+      const mcp = on ? p.mcp.filter((x) => x !== name) : [...p.mcp, name];
+      const toolConfig = { ...p.toolConfig };
+      if (on) delete toolConfig[name];
+      else if (!toolConfig[name]) toolConfig[name] = defaultsFor(name);
+      return { ...p, mcp, toolConfig };
+    });
+
+  const selectedTools = [...f.skills, ...f.mcp];
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -88,7 +170,7 @@ export default function AgentStructures() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-[380px_1fr] gap-6">
         <div className="card p-5 h-fit">
           <div className="flex items-center gap-2 mb-4">
             <Layers className="w-4 h-4 text-emerald-400" />
@@ -169,12 +251,42 @@ export default function AgentStructures() {
               <label className="text-xs text-slate-500 block mt-3">MCP servers</label>
               <div className="flex flex-wrap gap-2 mt-1">
                 {catalog.mcp.map((m) => (
-                  <button key={m} onClick={() => toggleMcp(m)}
-                    className={(f.mcp.includes(m) ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400') + ' px-2 py-1 rounded text-xs'}>
-                    {m}
+                  <button key={m.name} onClick={() => toggleMcp(m.name)}
+                    className={(f.mcp.includes(m.name) ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400') + ' px-2 py-1 rounded text-xs'} title={m.description}>
+                    {m.name}
                   </button>
                 ))}
               </div>
+
+              {selectedTools.length > 0 && (
+                <div className="mt-4 border-t border-slate-800 pt-3">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">Tool configuration</p>
+                  {selectedTools.map((name) => {
+                    const tool = toolEntry(name);
+                    if (!tool) return null;
+                    return (
+                      <div key={name} className="rounded-lg border border-slate-800 bg-surface-950/40 p-3 mb-3">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="badge-neutral">{tool.kind}</span>
+                          <span className="text-sm font-medium text-slate-200">{tool.name}</span>
+                        </div>
+                        {tool.configSchema.fields.length === 0 ? (
+                          <p className="text-xs text-slate-600">No configuration needed.</p>
+                        ) : (
+                          tool.configSchema.fields.map((field) => (
+                            <ConfigField
+                              key={field.key}
+                              field={field}
+                              value={(f.toolConfig[tool.name] ?? {})[field.key]}
+                              onChange={(v) => setToolConfig(tool.name, field.key, v)}
+                            />
+                          ))
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </>
           )}
 
@@ -210,6 +322,79 @@ export default function AgentStructures() {
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+const fieldCls =
+  'mt-1 w-full rounded-lg bg-surface-950 border border-slate-800 px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500';
+
+function ConfigField({
+  field,
+  value,
+  onChange,
+}: {
+  field: ToolConfigField;
+  value: unknown;
+  onChange: (v: unknown) => void;
+}) {
+  const label = (
+    <label className="text-xs text-slate-500" title={field.description}>{field.label}</label>
+  );
+
+  if (field.type === 'boolean') {
+    return (
+      <label className="flex items-center gap-2 mt-2 cursor-pointer">
+        <input type="checkbox" checked={value === true} onChange={(e) => onChange(e.target.checked)} className="rounded border-slate-700 bg-surface-950" />
+        <span className="text-xs text-slate-400">{field.label}</span>
+      </label>
+    );
+  }
+
+  if (field.type === 'enum') {
+    return (
+      <div className="mt-2">
+        {label}
+        <select value={String(value ?? field.default ?? '')} onChange={(e) => onChange(e.target.value)} className={fieldCls}>
+          {(field.enumValues ?? []).map((v) => <option key={v} value={v}>{v}</option>)}
+        </select>
+      </div>
+    );
+  }
+
+  const textValue = value === undefined || value === null ? '' : String(value);
+
+  if (field.type === 'number') {
+    return (
+      <div className="mt-2">
+        {label}
+        <input type="number" value={textValue} onChange={(e) => onChange(e.target.value === '' ? undefined : Number(e.target.value))} className={fieldCls} placeholder={field.placeholder} />
+      </div>
+    );
+  }
+
+  if (field.type === 'secret') {
+    return (
+      <div className="mt-2">
+        {label}
+        <input type="password" value={textValue} onChange={(e) => onChange(e.target.value)} className={fieldCls} placeholder={field.placeholder} />
+      </div>
+    );
+  }
+
+  if (field.type === 'text') {
+    return (
+      <div className="mt-2">
+        {label}
+        <textarea rows={2} value={textValue} onChange={(e) => onChange(e.target.value)} className={fieldCls} placeholder={field.placeholder} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-2">
+      {label}
+      <input value={textValue} onChange={(e) => onChange(e.target.value)} className={fieldCls} placeholder={field.placeholder} />
     </div>
   );
 }

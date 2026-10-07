@@ -377,11 +377,43 @@ export interface ToolSpec {
  * tools). An empty skills array means "all built-in skills"; an empty mcp
  * array means "no MCP servers" (skills only).
  */
+/** A single configurable field on a tool (skill or MCP server). */
+export interface ToolConfigField {
+  key: string;
+  label: string;
+  /** UI control type. */
+  type: 'string' | 'text' | 'number' | 'boolean' | 'enum' | 'secret';
+  description?: string;
+  required?: boolean;
+  /** Default value (used when the user leaves the field blank). */
+  default?: unknown;
+  /** Choices for type 'enum'. */
+  enumValues?: string[];
+  placeholder?: string;
+}
+
+/** The set of configurable fields a tool declares. */
+export interface ToolConfigSchema {
+  fields: ToolConfigField[];
+}
+
+/** A tool (skill or MCP server) as declared by the catalog. */
+export interface ToolCatalogEntry {
+  kind: 'skill' | 'mcp';
+  name: string;
+  description: string;
+  configSchema: ToolConfigSchema;
+  /** Function-calling parameters (skills only). */
+  parameters?: Record<string, unknown>;
+}
+
 export interface ToolChain {
   /** Skill names to enable (empty = all built-in). */
   skills: string[];
   /** MCP server source names to connect (empty = none). */
   mcp: string[];
+  /** Per-tool instance configuration, keyed by tool name. */
+  toolConfig?: Record<string, Record<string, unknown>>;
 }
 
 /**

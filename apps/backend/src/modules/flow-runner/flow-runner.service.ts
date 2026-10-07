@@ -200,7 +200,8 @@ export class FlowRunnerService {
     let promptTokens = 0;
     let completionTokens = 0;
 
-    const mcp = await this.connectMcp(strategy.toolChain?.mcp ?? []);
+    const toolConfig = strategy.toolChain?.toolConfig ?? {};
+    const mcp = await this.connectMcp(strategy.toolChain?.mcp ?? [], toolConfig);
     const skillSchema = buildSkillSchema(strategy.toolChain?.skills ?? []);
     const toolSchema: Array<Record<string, unknown>> = [
       ...skillSchema,
@@ -254,6 +255,7 @@ export class FlowRunnerService {
         const skill = executeSkill(name, args, {
           guidelines: input.guidelines,
           diffContent: input.diffContent,
+          toolConfig: toolConfig[name] ?? {},
         });
         if (skill !== null) return skill;
         if (mcp) {
@@ -276,9 +278,10 @@ export class FlowRunnerService {
   /** Connect the arm's MCP servers; returns null when none connect. */
   private async connectMcp(
     names: string[],
+    toolConfig: Record<string, Record<string, unknown>>,
   ): Promise<{ bridge: McpBridge; tools: Array<Record<string, unknown>> } | null> {
     if (names.length === 0) return null;
-    const configs = this.buildMcpConfigs(names);
+    const configs = this.buildMcpConfigs(names, toolConfig);
     if (Object.keys(configs).length === 0) return null;
     const bridge = new McpBridge();
     const mcpTools = await bridge.connect(configs);
@@ -294,25 +297,43 @@ export class FlowRunnerService {
     return { bridge, tools };
   }
 
-  /** Map arm toolChain.mcp names to MCP server configs from env (best-effort). */
-  private buildMcpConfigs(names: string[]): Record<string, McpServerConfig> {
+  /** Map arm toolChain.mcp names to MCP server configs; per-tool config wins over env. */
+  private buildMcpConfigs(
+    names: string[],
+    toolConfig: Record<string, Record<string, unknown>>,
+  ): Record<string, McpServerConfig> {
     const configs: Record<string, McpServerConfig> = {};
-    const mode = this.configService.get<string>('MCP_TRANSPORT_MODE') || 'sse';
+    const defaultMode = this.configService.get<string>('MCP_TRANSPORT_MODE') || 'sse';
     for (const name of names) {
+      const cfg = toolConfig[name] ?? {};
       const key = name.toUpperCase();
-      const url = this.configService.get<string>('MCP_' + key + '_URL');
-      const command = this.configService.get<string>('MCP_' + key + '_COMMAND');
-      const args = this.configService.get<string>('MCP_' + key + '_ARGS');
-      if (mode === 'stdio' && command) {
+      const transport = String(cfg.transport ?? defaultMode);
+      const url = (cfg.url as string | undefined) ?? this.configService.get<string>('MCP_' + key + '_URL');
+      const command = (cfg.command as string | undefined) ?? this.configService.get<string>('MCP_' + key + '_COMMAND');
+      const argsRaw = (cfg.args as string | undefined) ?? this.configService.get<string>('MCP_' + key + '_ARGS');
+      const env = this.buildMcpEnv(cfg);
+      if (transport === 'stdio' && command) {
         configs[name] = {
           transport: 'stdio',
           command,
-          args: args ? args.split(' ') : [],
+          args: argsRaw ? argsRaw.split(' ') : [],
+          ...(env ? { env } : {}),
         };
       } else if (url) {
-        configs[name] = { transport: 'sse', url };
+        configs[name] = { transport: 'sse', url, ...(env ? { env } : {}) };
       }
     }
     return configs;
+  }
+
+  /** Fold extra per-tool config (namespace, region, credentials…) into env vars. */
+  private buildMcpEnv(cfg: Record<string, unknown>): Record<string, string> | undefined {
+    const reserved = new Set(['transport', 'url', 'command', 'args']);
+    const env: Record<string, string> = {};
+    for (const [k, v] of Object.entries(cfg)) {
+      if (reserved.has(k) || v === undefined || v === null || v === '') continue;
+      env['MCP_' + k.toUpperCase()] = typeof v === 'string' ? v : JSON.stringify(v);
+    }
+    return Object.keys(env).length > 0 ? env : undefined;
   }
 }
