@@ -109,7 +109,7 @@ An experiment arm is a full `AuditStrategy` (`libs/shared-types`):
 
 ```
 engine · vendor · modelId · temperature · maxTokens · promptVariant
-flow ('sequential' | 'orchestrator') · toolChain (skills + mcp) · flowGraph
+flow ('sequential' | 'orchestrator') · toolChain (skills + mcp + toolConfig) · flowGraph
 ```
 
 So it tests the **agent architecture**, not just the model.
@@ -217,5 +217,7 @@ recomputed on the fly in `getReport()` each time you view the report.
 - `apps/backend/src/modules/experiments/experiment-stats.ts` — pure stats (CI, significance, winner)
 - `apps/backend/src/modules/experiments/experiment-ranking.ts` — ranking blend + promotion pick
 - `apps/backend/src/modules/experiments/promotions.service.ts` — active-flows promotion/rollback
+- `apps/backend/src/modules/flow-runner/` — flow-graph.ts (graph interpreter), tool-catalog.ts (skills/MCP + guard skills), flow-runner.service.ts (executor), mcp-discovery.controller.ts (MCP probe)
+- `apps/frontend/src/pages/AgentCanvas.tsx` — React Flow visual agent builder (Form/Canvas editors over the same AuditStrategy)
 - `apps/backend/src/database/schema.ts` — all tables
 - `libs/shared-types/src/index.ts` — `AuditStrategy`, `MetricsWeights`, flow/toolchain types

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -127,6 +128,7 @@ function CanvasWorkspace() {
   const [selectedId, setSelectedId] = useState<string | null>('agent');
   const [discovered, setDiscovered] = useState<Record<string, Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>>>({});
   const [discovering, setDiscovering] = useState<string | null>(null);
+  const navigate = useNavigate();
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([initialAgentNode()]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
@@ -467,6 +469,8 @@ function CanvasWorkspace() {
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
+              <button onClick={() => navigate('/experiments?control=' + s.id)} className="px-2 py-1 rounded bg-emerald-800 hover:bg-emerald-700 text-emerald-200 text-xs">A/B: control</button>
+              <button onClick={() => navigate('/experiments?treatment=' + s.id)} className="px-2 py-1 rounded bg-blue-800 hover:bg-blue-700 text-blue-200 text-xs">A/B: treatment</button>
               <button onClick={() => openStructure(s)} className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-white text-xs">Edit</button>
               <button onClick={() => removeStructure(s.id)} className="px-2 py-1 rounded bg-rose-700 hover:bg-rose-600 text-white text-xs"><Trash2 className="w-3.5 h-3.5" /></button>
             </div>

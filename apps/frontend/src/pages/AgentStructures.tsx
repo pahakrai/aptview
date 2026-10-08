@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Plus, Trash2, Layers, FlaskConical, CheckCircle2 } from 'lucide-react';
 import api from '../lib/api';
 import type {
@@ -64,6 +65,7 @@ export default function AgentStructures() {
   const [f, setF] = useState<FormState>(empty);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [mode, setMode] = useState<'form' | 'canvas'>('form');
+  const navigate = useNavigate();
   const [discovered, setDiscovered] = useState<Record<string, Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>>>({});
   const [discovering, setDiscovering] = useState<string | null>(null);
 
@@ -386,6 +388,8 @@ export default function AgentStructures() {
                 </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
+                <button onClick={() => navigate('/experiments?control=' + s.id)} className="px-2 py-1 rounded bg-emerald-800 hover:bg-emerald-700 text-emerald-200 text-xs">A/B: control</button>
+                <button onClick={() => navigate('/experiments?treatment=' + s.id)} className="px-2 py-1 rounded bg-blue-800 hover:bg-blue-700 text-blue-200 text-xs">A/B: treatment</button>
                 <button onClick={() => toggle(s)} className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-white text-xs"><CheckCircle2 className="w-3.5 h-3.5" /></button>
                 <button onClick={() => edit(s)} className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-white text-xs">Edit</button>
                 <button onClick={() => remove(s.id)} className="px-2 py-1 rounded bg-rose-700 hover:bg-rose-600 text-white text-xs"><Trash2 className="w-3.5 h-3.5" /></button>

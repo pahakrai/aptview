@@ -1,116 +1,161 @@
 # Agent Design & Configurable A/B Testing
 
-This page clarifies what the "agent design" capability is, what can be
-configured, and how A/B experiments are configured. It supersedes any earlier
-scattered notes about a "design page".
+This page is the reference for the "agent design" capability: what a structure
+is, how you design one (form or canvas), how skills/MCP are configured, and how
+a structure gets into an A/B experiment.
 
 ---
 
 ## 1. What an "agent structure" is
 
 An agent structure is a named, reusable design of the code-review agent's
-architecture. One structure bundles every variable you might want to change:
+architecture. It bundles every variable you might change into one saved object
+(the AuditStrategy):
 
 | Variable | Meaning |
 |---|---|
+| engine / vendor / modelId | which engine + model produces the review |
+| temperature / maxTokens | sampling parameters |
+| promptVariant | baseline / json / cot / few-shot |
 | flow | 'sequential' (fixed harness) or 'orchestrator' (planner + tool loop) |
-| flowGraph | a node/edge DAG. v1 ships two presets; a draw.io-style editor later emits the same shape |
-| toolChain | which skills and MCP servers the orchestrator arm may call |
-| model | engine, vendor, modelId, temperature, maxTokens, promptVariant |
+| toolChain | the tools an orchestrator arm may call (skills, mcp, toolConfig) |
+| flowGraph | a node/edge DAG; v1 ships two presets (sequential, orchestrator) |
 
-All of these are captured by the AuditStrategy type (engine, vendor, modelId,
-temperature, maxTokens, promptVariant, flow, toolChain, flowGraph).
+The two presets:
 
-### The two presets
-
-- sequential = fixed harness: diff -> guidelines -> one LLM call -> verdict.
+- sequential = diff -> guidelines -> one LLM call -> verdict.
 - orchestrator = planner -> tool loop (skills + MCP) -> reviewer -> verdict.
   Every LLM call in the loop is token-accounted.
 
 ---
 
-## 2. Designing structures (new)
+## 2. Designing structures — two editors
 
 Structures are stored in the agent_structures table and managed by the
-/agent-structures API:
+/agent-structures API (GET list, GET :id, POST, PATCH, DELETE).
 
-| Method | Endpoint | Purpose |
-|---|---|---|
-| GET | /agent-structures | list structures (optionally by organizationId) |
-| GET | /agent-structures/:id | fetch one |
-| POST | /agent-structures | create (name, description, strategy) |
-| PATCH | /agent-structures/:id | edit name/description/strategy/isActive |
-| DELETE | /agent-structures/:id | remove |
+The **Agent Structures page** has two editors over the same model — switch with
+the **Form / Canvas** toggle:
 
-GET /tool-catalog returns the available skills and MCP servers an orchestrator
-structure may reference in its toolChain (skills + MCP are still introduced via
-the structure's toolChain.skills and toolChain.mcp arrays).
+### 2.1 Form editor
 
-This is the "design page" backend: design multiple structures, save them, and
-edit their variables (flow, graph, tools, model, temperature, prompt)
-independently of any experiment.
+Pick flow, engine/vendor/model, temperature, max tokens, and prompt variant;
+toggle skills and MCP on/off; and set each tool's config in the "Tool
+configuration" panel. Fast, precise, keyboard-friendly.
+
+### 2.2 Canvas editor (visual builder, React Flow)
+
+A "Lego blocks" view of the same thing:
+
+- The **agent** is one container node showing model/temp/prompt, with two
+  colored input slots (blue = MCP data, red = skills/guardrails).
+- A **palette** on the left lists Native skills (red) and MCP connectors (blue);
+  drag them onto the canvas.
+- Link a connector/guardrail to the matching slot on the agent (connections are
+  validated: MCP -> blue slot, skill -> red slot).
+- Click any node to edit it in the **side panel** (agent: model/prompt; tool:
+  its config fields).
+- **Save workflow** compiles the layout back into the same AuditStrategy JSON.
+  The canvas is a view over the model — pixel positions are never stored.
 
 ---
 
-## 3. Selecting two structures for an A/B test
+## 3. Skills and MCP — two tiers, each with its own config
+
+GET /tool-catalog returns the catalog. Every tool (skill or MCP) declares a
+configSchema (a list of typed fields), so the UI renders a per-tool config form
+and the runner reads the values from toolChain.toolConfig[name].
+
+### 3.1 Native skills (guardrails, red)
+
+Compiled, in-process code. The frontend only selects them by name (skill_id);
+the runner resolves the name to the hardcoded handler in tool-catalog.ts.
+Built-ins today:
+
+- search_guidelines — search configured coding standards (config: maxResults,
+  defaultQuery).
+- assess_diff_size — added/removed line counts (config: countContextLines).
+- tenant_scope_guard — hard-locks MCP tool calls to the current tenant by
+  rewriting args (injects tenant_id). It runs **automatically before every MCP
+  call**, using session context the canvas author never sees.
+
+Each skill declares an enforcement policy: strict_block, sanitize_or_halt, or
+advisory. tenant_scope_guard defaults to strict_block (blocks the call if no
+tenant context is available).
+
+### 3.2 MCP connectors (external data, blue)
+
+External servers (k8s, aws, gcp, kubetail). Their config is saved per structure:
+transport (sse/stdio), url/command/args, plus scope fields (namespace, region,
+etc.). Secrets are stored as **references** (secretRef, e.g.
+env:AWS_ACCESS_KEY_ID), resolved from the environment at runtime — never raw
+keys in the JSON.
+
+POST /mcp/discover probes an MCP server and returns its tool list, so the UI's
+"Discover tools" button shows a read-only capability list the moment you enter
+a URL.
+
+---
+
+## 4. Selecting structures for an A/B test
 
 POST /experiments/from-structures takes one control structure and N treatment
-structure ids, and creates an experiment that runs them head-to-head (default
-N=1, but you can compare 2 or more treatments):
+structure ids and creates an experiment:
 
     {
       "name": "orchestrator vs sequential",
-      "controlStructureId": "uuid of structure A",
-      "treatmentStructureIds": ["uuid of structure B", "uuid of structure C"],
+      "controlStructureId": "uuid A",
+      "treatmentStructureIds": ["uuid B", "uuid C"],
       "rolloutPercent": 100,
       "minSampleSize": 50,
-      "metricsWeights": { "accuracy": 0.35, "quality": 0.35, "acceptance": 0.15, "speed": 0.075, "cost": 0.075 }
+      "metricsWeights": { ... }
     }
 
 The backend resolves the structures into control/treatment strategies, stores
-the snapshots, and records control_structure_id + treatment_structure_ids for
-provenance (which designs this experiment actually ran). Live review traffic is
-then deterministically bucketed (control vs treatments) per PR.
+snapshots, and records control_structure_id + treatment_structure_ids for
+provenance. Live traffic is deterministically bucketed per PR.
+
+### 4.1 Load a structure into an experiment (shortcut)
+
+From either editor, each structure card has **A/B: control** and
+**A/B: treatment** buttons. They navigate to /experiments?control=<id> or
+/experiments?treatment=<id>; the Experiments page pre-selects that structure in
+its "Create from agent structures" form (treatment is appended to the treatment
+list; control replaces the control selection). From there you add the remaining
+arm(s), name it, and create the experiment.
 
 ---
 
-## 4. Turning A/B on or off (the toggle)
+## 5. Turning A/B on or off (the toggle)
 
-Two levels:
+1. Master switch = the persisted experiments_enabled setting
+   (PUT /settings/experiments_enabled { "value": "true" | "false" }, no
+   redeploy), falling back to the EXPERIMENTS_ENABLED env var (default off).
+2. Per-experiment status = draft -> running -> paused/completed.
 
-1. Master switch = the persisted 'experiments_enabled' setting, configurable at
-   runtime via PUT /settings/experiments_enabled { "value": "true" | "false" }
-   (no redeploy). isEnabled() reads that first, then falls back to the
-   EXPERIMENTS_ENABLED env var (default off).
-2. Per-experiment status = draft -> running -> paused/completed. A running
-   experiment (with the master switch on) activates bucketing; pausing stops new
-   traffic from being bucketed while keeping collected data.
+The Experiments page has a "Live A/B testing" toggle that writes the master
+switch.
 
 ---
 
-## 5. End-to-end flow
+## 6. End-to-end flow
 
-    design structures (multiple)          /agent-structures
-        -> pick two                        /experiments/from-structures
-        -> set EXPERIMENTS_ENABLED=true    (config page toggle)
+    design structures (form or canvas)     /agent-structures
+        -> load into experiment            /experiments?control=|treatment=
+        -> pick control + N treatments     /experiments/from-structures
+        -> toggle experiments on           /settings/experiments_enabled
         -> set experiment status=running
-        -> live PR traffic bucketed by variant  (resolveArm)
-        -> collect runs + HITL decisions        (experiment_runs, review_telemetry)
-        -> rank + promote                       (admin_rankings, active_flows)
-        -> stats (p-value, Cohen d, Wilson)     (Python /analyze -> eval_summaries)
+        -> live PR traffic bucketed        (resolveArm)
+        -> collect runs + HITL decisions   (experiment_runs, review_telemetry)
+        -> rank + promote                  (admin_rankings, active_flows)
+        -> stats                           (Python /analyze -> eval_summaries)
 
 ---
 
-## 6. What the Experiments page does today (clarification)
+## 7. What the pages do
 
-The frontend Experiments page is the closest thing to a configuration page and
-currently provides:
-
-- Create an experiment (name, rollout %, min sample, treatment flow + skills/MCP).
-- Live A/B report (per-arm composite, confidence intervals, significance-gated winner).
-- Deliberate benchmark panel (run all arms on a pasted diff, rank, promote).
-- Methodology caveat note.
-
-With this change, the reusable-structure layer (/agent-structures) plus the
-two-structure selection (/experiments/from-structures) are the backend that the
-"design page" and "configuration page" UI should call.
+- **Agent Structures** (Form + Canvas) — design/reuse/edit/delete structures,
+  configure per-tool settings, and jump straight into an A/B experiment.
+- **Experiments** — live A/B report, deliberate benchmark, promotion, and the
+  "Create from agent structures" form (control + N treatments) with the
+  structure shortcut pre-fill.

@@ -291,8 +291,11 @@ Treat the winner as a **final business decision** only after:
 An experiment arm (AuditStrategy) now optionally carries three more fields:
 
 - flow: 'sequential' | 'orchestrator' — the agent architecture being tested.
-- toolChain: { skills: string[], mcp: string[] } — which skills and MCP servers an
-  orchestrator arm may call. Skills are the baseline; MCP is an optional add-on.
+- toolChain: { skills: string[], mcp: string[], toolConfig? } — which skills and
+  MCP servers an orchestrator arm may call, plus per-tool configuration (url,
+  transport, enforcement, secret references). Skills are the baseline; MCP is an
+  optional add-on. Guard skills (tenant_scope_guard) run automatically before
+  each MCP call, rewriting args with the session tenant.
 - flowGraph: a node/edge DAG (nodes + edges + entry) that the executor interprets.
   v1 ships two presets (sequential, orchestrator); richer draw.io-style editing
   later just emits a FlowGraphSpec.

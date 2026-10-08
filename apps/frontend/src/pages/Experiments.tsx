@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   FlaskConical,
   Trophy,
@@ -146,6 +146,9 @@ export default function Experiments() {
   const [structControl, setStructControl] = useState('');
   const [structTreatments, setStructTreatments] = useState<string[]>([]);
   const [experimentsEnabled, setExperimentsEnabled] = useState(false);
+  const [searchParams] = useSearchParams();
+  const controlFromUrl = searchParams.get('control');
+  const treatmentFromUrl = searchParams.get('treatment');
 
   const refresh = () => {
     api
@@ -252,7 +255,17 @@ export default function Experiments() {
       .get<StructureOption[]>('/agent-structures')
       .then((res) => {
         setStructures(res.data);
-        if (res.data[0] && !structControl) setStructControl(res.data[0].id);
+        const ctrl = controlFromUrl && res.data.some((s) => s.id === controlFromUrl) ? controlFromUrl : null;
+        if (ctrl) {
+          setStructControl(ctrl);
+          const src = res.data.find((s) => s.id === ctrl);
+          if (src && !structName) setStructName(src.name + ' A/B');
+        } else if (res.data[0] && !structControl) {
+          setStructControl(res.data[0].id);
+        }
+        if (treatmentFromUrl && res.data.some((s) => s.id === treatmentFromUrl)) {
+          setStructTreatments((prev) => (prev.includes(treatmentFromUrl) ? prev : [...prev, treatmentFromUrl]));
+        }
       })
       .catch(() => {});
     api
