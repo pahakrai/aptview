@@ -46,6 +46,7 @@ import {
   wilsonCI,
 } from './experiment-stats';
 import { blendFinalScore, normalizeRankings, pickHighestScore } from './experiment-ranking';
+import { chiSquareIndependence } from './eval-metrics';
 
 export const DEFAULT_METRICS_WEIGHTS: MetricsWeights = {
   accuracy: 0.35,
@@ -571,6 +572,7 @@ export class ExperimentsService {
         modelId: a.modelId,
         samples: a.samples,
         decided: a.decided,
+        accepted: a.accepted,
         undecided: a.samples - a.decided,
         acceptanceRate,
         acceptanceCI,
@@ -635,8 +637,23 @@ export class ExperimentsService {
                   Math.max(1, control.decided),
             )
           : null;
+      // Preliminary screening decision: a chi-square test of independence
+      // on the 2x2 acceptance table (control vs treatment). The acceptance
+      // verdict is gated on this — no "better"/"worse" on acceptance unless the
+      // association is real (valid + significant), not a gut reading of rates.
+      const acceptanceChiSquare = chiSquareIndependence(
+        control.accepted,
+        control.decided,
+        s.accepted,
+        s.decided,
+      );
+      const acceptancePrepro = !acceptanceChiSquare.valid
+        ? 'insufficient'
+        : acceptanceChiSquare.significant
+          ? 'pass'
+          : 'fail';
       const acceptanceVerdict =
-        acceptanceDelta !== null && seAcceptance !== null
+        acceptancePrepro === 'pass' && acceptanceDelta !== null && seAcceptance !== null
           ? deltaVerdict(acceptanceDelta, seAcceptance)
           : 'inconclusive';
 
@@ -647,6 +664,14 @@ export class ExperimentsService {
           compositeVerdict,
           acceptanceDelta,
           acceptanceVerdict,
+          acceptancePrepro,
+          acceptanceChiSquare: {
+            chiSquare: acceptanceChiSquare.chiSquare,
+            dof: acceptanceChiSquare.dof,
+            pValue: acceptanceChiSquare.pValue,
+            valid: acceptanceChiSquare.valid,
+            significant: acceptanceChiSquare.significant,
+          },
         },
       };
     });

@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  chiSquareIndependence,
+  chiSquarePValue,
   cohensD,
   editSimilarity,
   jaccardSimilarity,
@@ -65,4 +67,30 @@ test('regularizedIncompleteBeta: I_0.5(1,1) = 0.5', () => {
 test('meanCI: contains the mean and widens with fewer samples', () => {
   const [lo, hi] = meanCI([10, 12, 14, 16]);
   assert.ok(lo < 13 && 13 < hi);
+});
+
+test('chiSquareIndependence: equal rates -> no association (p ~ 1)', () => {
+  const r = chiSquareIndependence(50, 100, 50, 100);
+  assert.equal(r.valid, true);
+  assert.equal(r.significant, false);
+  assert.ok(r.pValue > 0.9);
+});
+
+test('chiSquareIndependence: 10/100 vs 40/100 -> significant association', () => {
+  const r = chiSquareIndependence(10, 100, 40, 100);
+  assert.equal(r.valid, true);
+  assert.equal(r.significant, true);
+  assert.ok(r.pValue < 0.001);
+  assert.ok(r.chiSquare > 20);
+});
+
+test('chiSquareIndependence: sparse table -> invalid (expected < 5)', () => {
+  const r = chiSquareIndependence(1, 2, 0, 2);
+  assert.equal(r.valid, false);
+  assert.equal(r.significant, false);
+});
+
+test('chiSquarePValue: chi2=0 -> p=1; chi2=10.83 -> p<0.001', () => {
+  assert.equal(chiSquarePValue(0, 1), 1);
+  assert.ok(chiSquarePValue(10.83, 1) < 0.001);
 });

@@ -147,6 +147,17 @@ significantly better than control at 95% (`compositeVerdict === 'better'`,
 not merely a higher mean). When no treatment qualifies, no recommendation is
 shown — the business answer is "keep control".
 
+### 3.8.1 Acceptance screening (chi-square "prepro decision")
+
+Before an acceptance difference is reported as `better`/`worse`, the arm's
+2x2 acceptance table (control vs treatment × accepted vs not-accepted) is
+screened with a chi-square test of independence (Yates-corrected). The
+acceptance verdict is only trusted when the screening is **valid** (all
+expected cell counts ≥ 5, Cochran's rule) **and significant** (p < 0.05);
+otherwise it is `inconclusive` (or `insufficient` data). This is the
+"not just gut feeling" gate — an acceptance "winner" must clear a formal
+association test before the finer delta/z-test verdict is read.
+
 ### 3.9 Cost in dollars, not tokens
 
 Cost is computed in USD from per-model pricing ($ per 1M input/output tokens),
@@ -235,7 +246,9 @@ org. When both exist, the org-specific experiment wins (see §3.2).
   metrics, and `minSampleReached` — a configured sample-count target, not
   statistical power.
 - Treatments also carry `vsControl` with `compositeVerdict` /
-  `acceptanceVerdict` (`better` / `worse` / `inconclusive`) and deltas.
+  `acceptanceVerdict` (`better` / `worse` / `inconclusive`) and deltas,
+  plus `acceptancePrepro` (`pass` / `fail` / `insufficient`) and the
+  underlying `acceptanceChiSquare` (χ², dof, p, valid, significant) screen.
 - `recommendation` is present **only** when a treatment is significantly
   better than control at 95% and has reached the sample target; otherwise it is
   `null` and the answer is "keep control".
@@ -423,3 +436,4 @@ Behavioral changes to the experiment layer and where each is defined above:
 | **Decomposition** | ExperimentsService split into PromotionsService + NotificationsService. | §8.6 |
 | **Test infra** | Added jest config + devDeps; pure-logic specs run via node --test (flow-graph, tool-catalog, experiment-stats, experiment-ranking). | §8.6 |
 | **Reference eval** | review_telemetry + gold/silver references + reference_evals; replay variants and compare with F1 / t-test / Cohen's d (eval-metrics.ts, eval.service.ts). | §8.7 |
+| **Chi-square acceptance screen** | Acceptance verdicts are now gated on a Yates-corrected chi-square test of independence (valid + significant) as a preliminary decision before the delta-CI verdict. | §3.8.1, §5 |

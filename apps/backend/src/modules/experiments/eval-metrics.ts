@@ -247,3 +247,128 @@ export function meanCI(values: number[]): [number, number] {
   const margin = (1.96 * Math.sqrt(sampleVariance(values))) / Math.sqrt(n);
   return [m - margin, m + margin];
 }
+
+// ---------------------------------------------------------------------------
+// Regularized incomplete gamma P(a, x) = gamma(a, x) / Gamma(a), via the
+// series/continued-fraction split (Numerical Recipes gammp). Used for the
+// chi-square survival function.
+// ---------------------------------------------------------------------------
+
+function gser(a: number, x: number): number {
+  const MAXIT = 200;
+  const EPS = 3e-14;
+  let sum = 1 / a;
+  let del = sum;
+  let ap = a;
+  for (let i = 0; i < MAXIT; i += 1) {
+    ap += 1;
+    del *= x / ap;
+    sum += del;
+    if (Math.abs(del) < Math.abs(sum) * EPS) break;
+  }
+  return sum * Math.exp(-x + a * Math.log(x) - logGamma(a));
+}
+
+function gcf(a: number, x: number): number {
+  const MAXIT = 200;
+  const EPS = 3e-14;
+  const FPMIN = 1e-300;
+  let b = x + 1 - a;
+  let c = 1 / FPMIN;
+  let d = 1 / b;
+  let h = d;
+  for (let i = 1; i <= MAXIT; i += 1) {
+    const an = -i * (i - a);
+    b += 2;
+    d = an * d + b;
+    if (Math.abs(d) < FPMIN) d = FPMIN;
+    c = b + an / c;
+    if (Math.abs(c) < FPMIN) c = FPMIN;
+    d = 1 / d;
+    const del = d * c;
+    h *= del;
+    if (Math.abs(del - 1) < EPS) break;
+  }
+  return Math.exp(-x + a * Math.log(x) - logGamma(a)) * h;
+}
+
+function gammp(a: number, x: number): number {
+  if (x <= 0) return 0;
+  if (x < a + 1) return gser(a, x);
+  return 1 - gcf(a, x);
+}
+
+/** Upper-tail p-value for a chi-square statistic, P(X > chi2). */
+export function chiSquarePValue(chi2: number, dof: number): number {
+  if (dof <= 0 || !Number.isFinite(chi2) || chi2 < 0) return NaN;
+  if (chi2 === 0) return 1;
+  return 1 - gammp(dof / 2, chi2 / 2);
+}
+
+// ---------------------------------------------------------------------------
+// Chi-square test of independence for a 2x2 contingency table. Used as the
+// preliminary screening decision on categorical acceptance data (control vs
+// treatment) BEFORE the finer effect-size / z-test verdict — so an acceptance
+// "winner" is backed by a formal test, not a gut reading of two rates.
+// ---------------------------------------------------------------------------
+
+export interface ChiSquareResult {
+  chiSquare: number;
+  dof: number;
+  pValue: number;
+  expected: { a: number; b: number; c: number; d: number };
+  /** Cochran's rule: all expected cell counts are >= 5. */
+  valid: boolean;
+  /** valid && pValue < alpha. */
+  significant: boolean;
+}
+
+export function chiSquareIndependence(
+  successA: number,
+  nA: number,
+  successB: number,
+  nB: number,
+  opts: { alpha?: number; yatesCorrection?: boolean } = {},
+): ChiSquareResult {
+  const alpha = opts.alpha ?? 0.05;
+  const a = successA;
+  const b = nA - successA;
+  const c = successB;
+  const d = nB - successB;
+  const N = a + b + c + d;
+  const invalid: ChiSquareResult = {
+    chiSquare: NaN,
+    dof: 1,
+    pValue: NaN,
+    expected: { a: NaN, b: NaN, c: NaN, d: NaN },
+    valid: false,
+    significant: false,
+  };
+  if (N <= 0 || a < 0 || b < 0 || c < 0 || d < 0) return invalid;
+  const rowA = a + b;
+  const rowB = c + d;
+  const colA = a + c;
+  const colB = b + d;
+  if (rowA === 0 || rowB === 0 || colA === 0 || colB === 0) return invalid;
+  const expected = {
+    a: (rowA * colA) / N,
+    b: (rowA * colB) / N,
+    c: (rowB * colA) / N,
+    d: (rowB * colB) / N,
+  };
+  const valid = Math.min(expected.a, expected.b, expected.c, expected.d) >= 5;
+  let chi2 = (N * (a * d - b * c) ** 2) / (rowA * rowB * colA * colB);
+  if (opts.yatesCorrection !== false) {
+    const numerator = Math.max(0, Math.abs(a * d - b * c) - N / 2) ** 2;
+    chi2 = (N * numerator) / (rowA * rowB * colA * colB);
+  }
+  const pValue = chiSquarePValue(chi2, 1);
+  return {
+    chiSquare: chi2,
+    dof: 1,
+    pValue,
+    expected,
+    valid,
+    significant: valid && pValue < alpha,
+  };
+}

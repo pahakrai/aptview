@@ -87,6 +87,21 @@ def proportion_z_test(sa, na, sb, nb):
     return {"z": float(z), "p": float(p)}
 
 
+def chi_square_test(sa, na, sb, nb):
+    """Chi-square test of independence on the 2x2 acceptance table (b vs a).
+
+    This is the preliminary screening decision: if the association between arm
+    and acceptance is not significant (or the table is too sparse), the finer
+    acceptance verdict is not trusted.
+    """
+    if na <= 0 or nb <= 0:
+        return {"chi2": None, "p": None, "dof": 1, "valid": False}
+    table = [[sa, na - sa], [sb, nb - sb]]
+    chi2, p, dof, expected = stats.chi2_contingency(table, correction=True)
+    valid = bool(float(np.min(expected)) >= 5.0) if expected.size else False
+    return {"chi2": float(chi2), "p": float(p), "dof": int(dof), "valid": valid}
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -159,6 +174,7 @@ def analyze(experiment_id: str):
 
         if v != control:
             zt = proportion_z_test(control_accepted, control_decided, accepted, decided)
+            chi = chi_square_test(control_accepted, control_decided, accepted, decided)
             arm["vs_control"] = {
                 "f1_delta": round(float(np.mean(f1)) - float(np.mean(control_f1)), 6)
                 if len(f1) and len(control_f1)
@@ -168,6 +184,8 @@ def analyze(experiment_id: str):
                 "latency_cohens_d": cohens_d(control_latency, latency),
                 "acceptance_z": zt["z"],
                 "acceptance_z_p": zt["p"],
+                "acceptance_chi2": chi["chi2"],
+                "acceptance_chi2_p": chi["p"],
             }
 
         arms.append(arm)
@@ -203,5 +221,6 @@ def analyze(experiment_id: str):
                 put(conn, vid, "f1_cohens_d", arm["vs_control"]["f1_cohens_d"])
                 put(conn, vid, "latency_cohens_d", arm["vs_control"]["latency_cohens_d"])
                 put(conn, vid, "acceptance_z_p", arm["vs_control"]["acceptance_z_p"])
+                put(conn, vid, "acceptance_chi2_p", arm["vs_control"]["acceptance_chi2_p"])
 
     return {"experiment_id": experiment_id, "arms": arms}

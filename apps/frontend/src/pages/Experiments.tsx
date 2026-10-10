@@ -67,6 +67,14 @@ interface ExperimentArm {
     compositeVerdict: 'better' | 'worse' | 'inconclusive';
     acceptanceDelta: number | null;
     acceptanceVerdict: 'better' | 'worse' | 'inconclusive';
+    acceptancePrepro: 'pass' | 'fail' | 'insufficient' | null;
+    acceptanceChiSquare: {
+      chiSquare: number;
+      dof: number;
+      pValue: number;
+      valid: boolean;
+      significant: boolean;
+    } | null;
   } | null;
 }
 
@@ -792,6 +800,14 @@ function ArmCard({
             {arm.vsControl && arm.vsControl.compositeVerdict !== 'inconclusive' && (
               <span className={verdictStyle(arm.vsControl.compositeVerdict)}>
                 {arm.vsControl.compositeVerdict}
+              </span>
+            )}
+            {arm.vsControl && arm.vsControl.acceptanceChiSquare && (
+              <span
+                className={arm.vsControl.acceptancePrepro === 'pass' ? 'badge-success' : arm.vsControl.acceptancePrepro === 'insufficient' ? 'badge-warning' : 'badge-neutral'}
+                title="Chi-square acceptance screening (prepro decision)"
+              >
+                accept χ² p={Number.isFinite(arm.vsControl.acceptanceChiSquare.pValue) ? arm.vsControl.acceptanceChiSquare.pValue.toFixed(3) : '—'} · {arm.vsControl.acceptancePrepro}
               </span>
             )}
           </div>
