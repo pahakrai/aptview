@@ -11,14 +11,19 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  bonferroniCorrection,
   clamp01,
   composeScore,
   costUsdOf,
   decisionToAccepted,
   deltaVerdict,
   hashBucket,
+  holmCorrection,
   normCI,
+  normQuantile,
+  sampleSizeForProportions,
   selectWinner,
+  twoSidedPFromZ,
   wilsonCI,
 } from '../experiment-stats.ts';
 import type { CandidateArm } from '../experiment-stats.ts';
@@ -174,4 +179,40 @@ test('selectWinner never picks control (vsControl null)', () => {
   ];
   const w = selectWinner(arms);
   assert.equal(w?.variantId, 'treatment-1');
+});
+
+test('twoSidedPFromZ: z=1.96 -> ~0.05, z=0 -> 1', () => {
+  assert.ok(Math.abs(twoSidedPFromZ(1.96) - 0.05) < 0.002);
+  assert.ok(twoSidedPFromZ(0) > 0.999);
+});
+
+test('holmCorrection matches the known step-down example', () => {
+  // p = [0.01, 0.04, 0.03] with n=3 -> adjusted [0.03, 0.06, 0.06]
+  const adj = holmCorrection([0.01, 0.04, 0.03]);
+  assert.ok(Math.abs(adj[0] - 0.03) < 1e-9);
+  assert.ok(Math.abs(adj[1] - 0.06) < 1e-9);
+  assert.ok(Math.abs(adj[2] - 0.06) < 1e-9);
+});
+
+test('holmCorrection caps at 1 and leaves NaN as 1', () => {
+  const adj = holmCorrection([0.5, NaN]);
+  assert.ok(adj[0] <= 1);
+  assert.equal(adj[1], 1);
+});
+
+test('bonferroniCorrection: p * m, capped at 1', () => {
+  const adj = bonferroniCorrection([0.01, 0.4, 0.03], 3);
+  assert.ok(Math.abs(adj[0] - 0.03) < 1e-9);
+  assert.equal(adj[1], 1);
+  assert.ok(Math.abs(adj[2] - 0.09) < 1e-9);
+});
+
+test('sampleSizeForProportions: 0.5 vs 0.6 at 80% power ~ 389/arm', () => {
+  const n = sampleSizeForProportions(0.5, 0.6);
+  assert.ok(n >= 380 && n <= 395, 'n=' + n);
+});
+
+test('normQuantile: 0.5 -> 0, 0.975 -> ~1.96', () => {
+  assert.ok(Math.abs(normQuantile(0.5)) < 1e-9);
+  assert.ok(Math.abs(normQuantile(0.975) - 1.96) < 0.001);
 });

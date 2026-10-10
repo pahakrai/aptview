@@ -39,10 +39,12 @@ import {
   decisionToAccepted,
   deltaVerdict,
   hashBucket,
+  holmCorrection,
   mean,
   normCI,
   sd,
   selectWinner,
+  twoSidedPFromZ,
   wilsonCI,
 } from './experiment-stats';
 import { blendFinalScore, normalizeRankings, pickHighestScore } from './experiment-ranking';
@@ -600,17 +602,19 @@ export class ExperimentsService {
     });
 
     const control = scored.find((s) => s.variantId === 'control');
-    const arms = scored.map((s) => {
-      if (!control || s.variantId === 'control') {
-        return { ...s, vsControl: null };
-      }
 
+    // Pre-compute raw per-treatment stats so the multiple-comparison
+    // correction (Holm) can be applied ACROSS treatments — the family-wise
+    // gate that stops N simultaneous tests from manufacturing a "winner".
+    const treatments = scored.filter((s) => s.variantId !== 'control');
+    const pre = treatments.map((s) => {
       const compositeDelta =
-        s.composite !== null && control.composite !== null
+        s.composite !== null && control && control.composite !== null
           ? s.composite - control.composite
           : null;
       const seComposite =
         s.compositeSd !== null &&
+        control &&
         control.compositeSd !== null &&
         s.compositeN > 0 &&
         control.compositeN > 0
@@ -619,17 +623,17 @@ export class ExperimentsService {
                 (control.compositeSd ** 2) / control.compositeN,
             )
           : null;
-      const compositeVerdict =
-        compositeDelta !== null && seComposite !== null
-          ? deltaVerdict(compositeDelta, seComposite)
-          : 'inconclusive';
+      const compositeP =
+        compositeDelta !== null && seComposite !== null && seComposite > 0
+          ? twoSidedPFromZ(compositeDelta / seComposite)
+          : null;
 
       const acceptanceDelta =
-        s.acceptanceRate !== null && control.acceptanceRate !== null
+        s.acceptanceRate !== null && control && control.acceptanceRate !== null
           ? s.acceptanceRate - control.acceptanceRate
           : null;
       const seAcceptance =
-        s.acceptanceRate !== null && control.acceptanceRate !== null
+        s.acceptanceRate !== null && control && control.acceptanceRate !== null
           ? Math.sqrt(
               (s.acceptanceRate * (1 - s.acceptanceRate)) /
                 Math.max(1, s.decided) +
@@ -637,49 +641,74 @@ export class ExperimentsService {
                   Math.max(1, control.decided),
             )
           : null;
-      // Preliminary screening decision: a chi-square test of independence
-      // on the 2x2 acceptance table (control vs treatment). The acceptance
-      // verdict is gated on this — no "better"/"worse" on acceptance unless the
-      // association is real (valid + significant), not a gut reading of rates.
       const acceptanceChiSquare = chiSquareIndependence(
-        control.accepted,
-        control.decided,
+        control ? control.accepted : 0,
+        control ? control.decided : 0,
         s.accepted,
         s.decided,
       );
-      const acceptancePrepro = !acceptanceChiSquare.valid
+      return { s, compositeDelta, seComposite, compositeP, acceptanceDelta, seAcceptance, acceptanceChiSquare };
+    });
+
+    const compositeAdj = holmCorrection(pre.map((p) => p.compositeP ?? NaN));
+    const acceptanceAdj = holmCorrection(pre.map((p) => p.acceptanceChiSquare.pValue));
+
+    const byVariant = new Map(
+      pre.map((p, i) => [
+        p.s.variantId,
+        { ...p, compositePAdjusted: compositeAdj[i], acceptancePAdjusted: acceptanceAdj[i] },
+      ]),
+    );
+
+    const arms = scored.map((s) => {
+      if (!control || s.variantId === 'control') {
+        return { ...s, vsControl: null };
+      }
+      const t = byVariant.get(s.variantId)!;
+
+      const compositeVerdict =
+        t.compositeDelta !== null &&
+        t.seComposite !== null &&
+        Number.isFinite(t.compositePAdjusted) &&
+        t.compositePAdjusted < 0.05
+          ? deltaVerdict(t.compositeDelta, t.seComposite)
+          : 'inconclusive';
+
+      const acceptancePrepro = !t.acceptanceChiSquare.valid
         ? 'insufficient'
-        : acceptanceChiSquare.significant
+        : t.acceptancePAdjusted < 0.05
           ? 'pass'
           : 'fail';
       const acceptanceVerdict =
-        acceptancePrepro === 'pass' && acceptanceDelta !== null && seAcceptance !== null
-          ? deltaVerdict(acceptanceDelta, seAcceptance)
+        acceptancePrepro === 'pass' && t.acceptanceDelta !== null && t.seAcceptance !== null
+          ? deltaVerdict(t.acceptanceDelta, t.seAcceptance)
           : 'inconclusive';
 
       return {
         ...s,
         vsControl: {
-          compositeDelta,
+          compositeDelta: t.compositeDelta,
           compositeVerdict,
-          acceptanceDelta,
+          compositeP: t.compositeP,
+          compositePAdjusted: t.compositePAdjusted,
+          acceptanceDelta: t.acceptanceDelta,
           acceptanceVerdict,
           acceptancePrepro,
+          acceptancePAdjusted: t.acceptancePAdjusted,
           acceptanceChiSquare: {
-            chiSquare: acceptanceChiSquare.chiSquare,
-            dof: acceptanceChiSquare.dof,
-            pValue: acceptanceChiSquare.pValue,
-            valid: acceptanceChiSquare.valid,
-            significant: acceptanceChiSquare.significant,
+            chiSquare: t.acceptanceChiSquare.chiSquare,
+            dof: t.acceptanceChiSquare.dof,
+            pValue: t.acceptanceChiSquare.pValue,
+            valid: t.acceptanceChiSquare.valid,
+            significant: t.acceptanceChiSquare.significant,
           },
         },
       };
     });
 
-    // A treatment is recommended only when it is significantly better than
-    // control (95% composite verdict). A bare mean advantage — or a winner
-    // picked before significance — is exactly the premature "winner" the
-    // significance machinery exists to prevent.
+    // Pre-registered winner rule: a treatment is recommended only when it has
+    // reached the sample target AND its Holm-corrected composite p-value is
+    // < 0.05 versus control. A bare mean advantage is not a winner.
     const winner = selectWinner(arms);
 
     for (const arm of arms) {
@@ -697,14 +726,19 @@ export class ExperimentsService {
       metricsWeights: exp.metricsWeights,
       arms,
       recommendation: winner,
-      caveat:
+      caveat: [
         'Speed and cost are normalized against the largest values seen so far ' +
-        'in this experiment, so composite scores and their CIs are relative ' +
-        'rankings whose baselines drift as more audits arrive — not fixed-property ' +
-        'intervals. "Min sample reached" is a configured sample target, not a ' +
-        'statistical power computation. A treatment is recommended only when its ' +
-        'composite is significantly better than control at 95%; no multiple-' +
-        'comparison correction is applied when several treatments are compared.',
+          'in this experiment, so composite scores and their CIs are relative ' +
+          'rankings whose baselines drift as more audits arrive — not fixed-property ' +
+          'intervals.',
+        'Winner rule (pre-registered): a treatment is recommended only when it has ' +
+          'reached minSampleSize AND its Holm-corrected composite p-value is < 0.05 ' +
+          'versus control (multiple-comparison corrected across all treatments).',
+        'Acceptance is screened by a Yates-corrected chi-square test with the same ' +
+          'Holm correction, then the two-proportion delta CI.',
+        '"Min sample reached" is a configured target, not a statistical power ' +
+          'computation.',
+      ].join(' '),
     };
   }
 

@@ -158,6 +158,23 @@ otherwise it is `inconclusive` (or `insufficient` data). This is the
 "not just gut feeling" gate — an acceptance "winner" must clear a formal
 association test before the finer delta/z-test verdict is read.
 
+### 3.8.2 Multiple-comparison correction + pre-registered winner rule
+
+With N treatments each compared to control at 95%, the family-wise
+false-positive rate inflates (roughly 1 - 0.95^N). Every composite and
+acceptance comparison is therefore corrected across the whole family with a
+**Holm-Bonferroni step-down** (FWER-controlled, more powerful than plain
+Bonferroni) before a `better`/`worse` verdict is trusted.
+
+The winner rule is **pre-registered** (fixed in code, surfaced in the report
+caveat): a treatment is recommended only when it has reached `minSampleSize`
+**and** its Holm-adjusted composite p-value is < 0.05 versus control. No bare
+mean advantage wins.
+
+A power helper (`sampleSizeForProportions` in experiment-stats.ts) computes
+the per-arm sample size needed to tell two acceptance rates apart at a target
+power, so `minSampleSize` can be chosen from power rather than a guess.
+
 ### 3.9 Cost in dollars, not tokens
 
 Cost is computed in USD from per-model pricing ($ per 1M input/output tokens),
@@ -270,11 +287,10 @@ org. When both exist, the org-specific experiment wins (see §3.2).
   from the data accumulated *so far*, so composite scores and their CIs drift
   as more audits arrive. Treat the composite CI as a relative ranking, not a
   fixed-property interval.
-- **No multiple-comparison correction** — each treatment is tested against
-  control at 95%, so with N treatments the family-wise false-positive rate
-  grows. The recommendation gates on significance, but treat "significantly
-  better" as screening evidence, not proof, until an exact test with
-  correction (or a pre-registered winner rule) is in place.
+- **Multiple-comparison handling is Holm, not FDR/sequential** — Holm controls
+  the family-wise error rate (no inflation), but it is conservative with many
+  arms; Benjamini-Hochberg FDR would trade more power for a looser guarantee.
+  Sequential stopping / alpha-spending is still not implemented.
 - **Sample target ≠ statistical power** — `minSampleSize` is a configured
   per-arm count that gates the winner, not a power computation (no effect
   size / variance / alpha / beta).
@@ -286,10 +302,10 @@ org. When both exist, the org-specific experiment wins (see §3.2).
 
 Treat the winner as a **final business decision** only after:
 
-1. Exact significance (t/Welch for means, two-proportion z for acceptance) on
-   top of the existing CIs — the composite verdict already uses a Welch-style
-   standard error, but a p-value with multiple-comparison handling is the
-   production-grade step.
+1. Holm-corrected significance is now applied (composite + acceptance); the
+   remaining step is an exact t/Welch p-value on small samples in place of the
+   normal approximation, plus sequential stopping or a pre-registered
+   sample-size plan.
 2. A live cost model (per-model $/1M tokens) replacing the hardcoded table.
 3. Sequential stopping or a pre-registered sample-size plan.
 4. A documented eligibility model for acceptance (e.g., track *why* a PR was
@@ -437,3 +453,4 @@ Behavioral changes to the experiment layer and where each is defined above:
 | **Test infra** | Added jest config + devDeps; pure-logic specs run via node --test (flow-graph, tool-catalog, experiment-stats, experiment-ranking). | §8.6 |
 | **Reference eval** | review_telemetry + gold/silver references + reference_evals; replay variants and compare with F1 / t-test / Cohen's d (eval-metrics.ts, eval.service.ts). | §8.7 |
 | **Chi-square acceptance screen** | Acceptance verdicts are now gated on a Yates-corrected chi-square test of independence (valid + significant) as a preliminary decision before the delta-CI verdict. | §3.8.1, §5 |
+| **Holm + pre-registered winner** | Composite and acceptance p-values are now Holm-corrected across treatments before any verdict; the winner rule (minSampleReached + Holm-adjusted composite p < 0.05) is pre-registered. | §3.8.2, §5 |

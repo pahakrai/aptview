@@ -65,9 +65,12 @@ interface ExperimentArm {
   vsControl: {
     compositeDelta: number | null;
     compositeVerdict: 'better' | 'worse' | 'inconclusive';
+    compositeP: number | null;
+    compositePAdjusted: number | null;
     acceptanceDelta: number | null;
     acceptanceVerdict: 'better' | 'worse' | 'inconclusive';
     acceptancePrepro: 'pass' | 'fail' | 'insufficient' | null;
+    acceptancePAdjusted: number | null;
     acceptanceChiSquare: {
       chiSquare: number;
       dof: number;
@@ -798,16 +801,19 @@ function ArmCard({
               </span>
             )}
             {arm.vsControl && arm.vsControl.compositeVerdict !== 'inconclusive' && (
-              <span className={verdictStyle(arm.vsControl.compositeVerdict)}>
+              <span
+                className={verdictStyle(arm.vsControl.compositeVerdict)}
+                title={'Holm-adj p = ' + (arm.vsControl.compositePAdjusted !== null && Number.isFinite(arm.vsControl.compositePAdjusted) ? arm.vsControl.compositePAdjusted.toFixed(4) : '—')}
+              >
                 {arm.vsControl.compositeVerdict}
               </span>
             )}
             {arm.vsControl && arm.vsControl.acceptanceChiSquare && (
               <span
                 className={arm.vsControl.acceptancePrepro === 'pass' ? 'badge-success' : arm.vsControl.acceptancePrepro === 'insufficient' ? 'badge-warning' : 'badge-neutral'}
-                title="Chi-square acceptance screening (prepro decision)"
+                title="Acceptance screen: chi-square (Yates) + Holm correction"
               >
-                accept χ² p={Number.isFinite(arm.vsControl.acceptanceChiSquare.pValue) ? arm.vsControl.acceptanceChiSquare.pValue.toFixed(3) : '—'} · {arm.vsControl.acceptancePrepro}
+                accept χ² p(adj)={arm.vsControl.acceptancePAdjusted !== null && Number.isFinite(arm.vsControl.acceptancePAdjusted) ? arm.vsControl.acceptancePAdjusted.toFixed(3) : '—'} · {arm.vsControl.acceptancePrepro}
               </span>
             )}
           </div>
